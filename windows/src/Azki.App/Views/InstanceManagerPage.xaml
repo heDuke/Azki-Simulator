@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="Azki.App.Views.InstanceManagerPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ScrollViewer>
+    <StackPanel Padding="36,24" Spacing="12">
+      <TextBlock Text="实例" Style="{StaticResource TitleTextBlockStyle}" />
+      <TextBlock Text="M0 骨架：实例创建、命名与管理将在 M4 中实现。" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+    </StackPanel>
+  </ScrollViewer>
+</Page>

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Azki.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Azki Simulator">
+
+  <Window.SystemBackdrop>
+    <MicaBackdrop />
+  </Window.SystemBackdrop>
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+
+    <!-- Custom title bar area (ExtendsContentIntoTitleBar) -->
+    <Grid x:Name="AppTitleBar" Grid.Row="0" Height="48" Padding="16,0,0,0">
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="12">
+        <FontIcon Glyph="&#xE7F8;" FontSize="16" />
+        <TextBlock Text="Azki Simulator" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center" />
+      </StackPanel>
+    </Grid>
+
+    <!-- Decision #9: below build 26300 we only warn once, then keep running. -->
+    <InfoBar
+        x:Name="OsWarningBar"
+        Grid.Row="1"
+        Margin="12,0,12,8"
+        Severity="Warning"
+        IsClosable="True"
+        Title="{x:Bind ViewModel.OsWarningTitle}"
+        Message="{x:Bind ViewModel.OsWarningMessage}"
+        IsOpen="{x:Bind ViewModel.IsOsWarningOpen, Mode=TwoWay}" />
+
+    <NavigationView
+        x:Name="NavView"
+        Grid.Row="2"
+        IsBackButtonVisible="Collapsed"
+        IsSettingsVisible="True"
+        PaneDisplayMode="Left"
+        IsPaneOpen="False"
+        SelectionChanged="OnNavigationSelectionChanged">
+      <NavigationView.MenuItems>
+        <NavigationViewItem Content="工作区" Tag="workspace" Icon="Home" />
+        <NavigationViewItem Content="实例" Tag="instances" Icon="List" />
+      </NavigationView.MenuItems>
+      <Frame x:Name="ContentFrame" />
+    </NavigationView>
+  </Grid>
+</Window>
