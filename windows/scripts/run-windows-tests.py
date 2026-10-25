@@ -3,7 +3,9 @@
 
 Modules here are pure Python (their C parts skip without a GLib compiler).
 Excluded, because they exercise POSIX-only primitives: test_developer_storage
-(Darwin renameatx_np), test_gpu_*/test_touch_sleep (C + GLib builds), and
+(Darwin renameatx_np), test_gpu_*/test_touch_sleep and
+test_production_imu_sample_registers (they compile C against host GLib; a
+runner's unrelated pkg-config would make them error rather than skip), and
 test_rejects_symlink_hardlink_and_nonregular_file (os.mkfifo; symlinks need
 Developer Mode on Windows).
 """
@@ -13,7 +15,7 @@ import unittest
 
 TESTS = Path(__file__).resolve().parents[2] / "tests"
 MODULES = ("test_frame_raw", "test_device_parameters", "test_orientation")
-SKIPPED = {"test_rejects_symlink_hardlink_and_nonregular_file"}
+SKIPPED = {"test_rejects_symlink_hardlink_and_nonregular_file", "test_production_imu_sample_registers"}
 
 
 def flatten(suite):
