@@ -3661,8 +3661,17 @@ static void lcdc_shared_init(BesLcdc *l)
     stl_le_p(l->shared_frame + 8, 1);
     stl_le_p(l->shared_frame + 28, LCD_SHARED_RGB565LE);
 #else
-    error_report("lcd-frame-file requires a POSIX host");
-    exit(1);
+    void *mapped = bes_win32_map_frame(l->frame_file, LCD_SHARED_SIZE);
+    if (!mapped) {
+        error_report("Cannot map LCD framebuffer %s: %s",
+                     l->frame_file, strerror(errno));
+        exit(1);
+    }
+    l->shared_frame = mapped;
+    memset(l->shared_frame, 0, LCD_SHARED_SIZE);
+    memcpy(l->shared_frame, "Q66FRAME", 8);
+    stl_le_p(l->shared_frame + 8, 1);
+    stl_le_p(l->shared_frame + 28, LCD_SHARED_RGB565LE);
 #endif
 }
 
@@ -5705,6 +5714,8 @@ static void best1503_finalize(Object *obj)
     if (l->shared_frame) {
         munmap(l->shared_frame, LCD_SHARED_SIZE);
     }
+#else
+    bes_win32_unmap_frame(l->shared_frame);
 #endif
     g_free(l->argb_pixels);
     l->argb_pixels = NULL;

@@ -10,9 +10,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#ifdef _WIN32
+#include "bes-host-win32.h"
+#else
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 #ifndef BES_STORE_PWRITE
 #define BES_STORE_PWRITE pwrite
@@ -38,6 +42,9 @@ static void bes_store_close(BesNandStore *s)
 
 static int bes_store_open_file(const char *path, uint64_t bytes)
 {
+#ifdef _WIN32
+    return bes_win32_open_store(path, bytes);
+#else
     struct stat st;
     int fd = open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (fd < 0) { return -1; }
@@ -50,6 +57,7 @@ static int bes_store_open_file(const char *path, uint64_t bytes)
     }
     if (flock(fd, LOCK_EX | LOCK_NB)) { close(fd); return -1; }
     return fd;
+#endif
 }
 
 static bool bes_store_open(BesNandStore *s, const char *data,
