@@ -13,7 +13,7 @@ windows/
 ├── AzkiSimulator.slnx          解决方案（VS 2026 / dotnet CLI）
 ├── global.json                 .NET SDK 版本（允许向上滚动到本机更新的 SDK）
 ├── Directory.Build.props       公共 MSBuild 设置（TFM、Nullable、分析器等）
-├── Directory.Packages.props    NuGet 包版本集中管理（Windows App SDK 2.5.1 等）
+├── Directory.Packages.props    NuGet 包版本集中管理（Windows App SDK 2.5.1 组件包等）
 ├── src/
 │   ├── Azki.Core/              Swift Core 的 C# 移植（net11.0，无 UI 依赖，可跨平台测试）
 │   └── Azki.App/               WinUI 3 桌面程序（net11.0-windows10.0.26100.0，非打包）
@@ -29,7 +29,7 @@ windows/
 | 系统 | Windows 11，x64 或 ARM64。推荐 Windows 11 26H2（build 26300）及以上；更低版本启动时只显示一次警告，不会阻止运行 |
 | .NET SDK | **.NET 11 RC2**（`11.0.100-rc.2.26504.105`）或更新的 .NET 11 / 更高版本 SDK。下载：<https://dotnet.microsoft.com/download/dotnet/11.0>，ARM64 设备请装 **Arm64** 版安装包 |
 | IDE（可选） | Visual Studio 2026，勾选工作负载 **“WinUI 应用程序开发”**（Windows App SDK / WinUI 3 模板与工具）以及 **“.NET 桌面开发”**；也可只用命令行 |
-| Windows App SDK | 通过 NuGet 自动获取（`Microsoft.WindowsAppSDK` 2.5.1），**不需要**单独安装运行时：程序以自包含方式发布 |
+| Windows App SDK | 通过 NuGet 自动获取（只引用 2.5.1 对应的组件包 WinUI、Foundation、InteractiveExperiences，不含 AI/ML/Search/Widgets），**不需要**单独安装运行时：程序以自包含方式发布 |
 
 `global.json` 设置了 `rollForward: latestMajor` 和 `allowPrerelease: true`：只要本机装的 SDK 不低于 RC2，就会自动使用本机最新的 SDK。
 如果本机 SDK 比 RC2 还旧，`dotnet` 会报找不到 SDK，此时请升级 SDK，或把 `global.json` 中的 `version` 改成 `dotnet --version` 的输出。
