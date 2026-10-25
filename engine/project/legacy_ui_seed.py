@@ -13,7 +13,7 @@ import struct
 import subprocess
 import tempfile
 
-from device_catalog import CACHE, ROOT, digest, select
+from device_catalog import CACHE, EXE, ROOT, digest, select
 
 PREFERENCES = {
     'persist.setup_wizard': '1',
@@ -22,8 +22,8 @@ PREFERENCES = {
     'persist.screen.dimmer_timeout': '2147483647',
 }
 UNQLITE = ROOT / 'references/openvela-unqlite'
-DB_HELPER = ROOT / 'backend/build/legacy-ui-db'
-YAFFS_HELPER = ROOT / 'backend/build/yaffs-image'
+DB_HELPER = ROOT / ('backend/build/legacy-ui-db' + EXE)
+YAFFS_HELPER = ROOT / ('backend/build/yaffs-image' + EXE)
 
 
 def data_partition(ap_data):

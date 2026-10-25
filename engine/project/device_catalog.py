@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
 import tempfile
 import zipfile
 
@@ -20,6 +21,8 @@ from firmware import DEFAULT_AP
 from firmware_resources import checked_member, n67_system_members
 
 ROOT = Path(__file__).resolve().parent
+# Built helpers and QEMU carry .exe only on Windows.
+EXE = '.exe' if sys.platform == 'win32' else ''
 WORKSPACE = ROOT.parents[1]
 CATALOG = ROOT/'profiles/catalog.json'
 CACHE = ROOT/'assets/devices'
@@ -291,7 +294,7 @@ def prepare_storage(profile):
     source=Path(profile['ota_path']).read_bytes()
     _verify_ota_ap(profile,source)
     records=_storage_members(profile,source)
-    helper=ROOT/'backend/build/yaffs-image'
+    helper=ROOT/('backend/build/yaffs-image'+EXE)
     expected=dict(schema_version=2,ota_sha256=profile['ota_sha256'],ap_sha256=profile['ap']['sha256'],
         builder_sha256=digest(helper),filesystem='YAFFS2 inband tags',image_bytes=size,
         page_bytes=2048,erase_bytes=131072,original_members=records,remount_content_verified=True)

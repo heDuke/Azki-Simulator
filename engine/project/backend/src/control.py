@@ -5,10 +5,12 @@ import json
 import math
 import os
 from pathlib import Path
-from socketserver import StreamRequestHandler, ThreadingUnixStreamServer
+from socketserver import StreamRequestHandler
 import struct
 import stat
 import sys
+if sys.platform != 'win32':
+    from socketserver import ThreadingUnixStreamServer
 import threading
 import time
 
@@ -749,7 +751,12 @@ class WatchControl:
                         pass  # An abandoned input client is normal during stop.
                 finally:
                     pending.release()
-        self.input_server = ThreadingUnixStreamServer(str(path), Handler)
+        if sys.platform == 'win32':
+            # Loopback TCP; input.sock is the endpoint file (port + token).
+            import win32_compat
+            self.input_server = win32_compat.stream_server(path, Handler)
+        else:
+            self.input_server = ThreadingUnixStreamServer(str(path), Handler)
         self.input_server.daemon_threads = True
         Path(path).chmod(0o600)
         self.input_thread = threading.Thread(target=self._serve_requests, args=(self.input_server,), daemon=True)

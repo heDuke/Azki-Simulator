@@ -8,7 +8,7 @@ import re
 import struct
 import sys
 
-from device_catalog import ROOT, digest, load_catalog, prepare_storage, select, zip_member_records
+from device_catalog import EXE, ROOT, digest, load_catalog, prepare_storage, select, zip_member_records
 
 BACKEND = ROOT/'backend'
 
@@ -351,7 +351,7 @@ def main():
         args.sensor_image = image_path
     sys.argv=[str(BACKEND/'run.py'),'--bluetooth','virtual' if virtual_requested else 'reject',
         '--firmware',profile['ap_path'],'--resource',str(resource),'--board-profile',str(board_path),
-        '--qemu',str(BACKEND/'build/qemu-system-arm'),'--log-dir',str(logdir)]
+        '--qemu',str(BACKEND/('build/qemu-system-arm'+EXE)),'--log-dir',str(logdir)]
     if profile['model'] == 'miwear.watch.p65':
         if args.audio_image:
             sys.argv += ['--audio-image', str(args.audio_image)]

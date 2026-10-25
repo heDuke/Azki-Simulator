@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -195,7 +196,7 @@ def _run(profile, args, logdir):
         factory.chmod(0o600)
         machine += ',factory-image=' + str(factory).replace(',', ',,')
     machine += ',lcd-frame-file=' + str(frame).replace(',', ',,')
-    qemu = ROOT / 'backend/build/qemu-system-arm'
+    qemu = ROOT / ('backend/build/qemu-system-arm' + ('.exe' if sys.platform == 'win32' else ''))
     started = time.monotonic()
     error = None
     interrupted = timed_out = False

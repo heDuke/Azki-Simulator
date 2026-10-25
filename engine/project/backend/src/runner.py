@@ -19,6 +19,9 @@ import threading
 from .control import WatchControl, NativeWindow
 
 from .qmp import QMP
+
+# Built helpers and QEMU carry .exe only on Windows.
+EXE = '.exe' if sys.platform == 'win32' else ''
 from .instance_data import (validate_instance_images, instance_machine_options, initialize_instance_data, validate_instance_nor,
                             load_instance_settings, apply_instance_settings, read_instance_properties,
                             instance_settings_options,
@@ -280,7 +283,7 @@ def main():
                         help='Complete first-run setup locally; --no-skip-oobe keeps firmware setup. Never resets an existing instance.')
     parser.add_argument('--skip-binding', action='store_true',
                         help='Start the original Chinese watchface with local setup marked complete; no App/account binding')
-    parser.add_argument('--qemu', type=Path, default=here / 'build/qemu-system-arm')
+    parser.add_argument('--qemu', type=Path, default=here / ('build/qemu-system-arm' + EXE))
     parser.add_argument('--board-profile', type=Path,
                         help='Validated product-specific BES1503 memory geometry JSON')
     parser.add_argument('--seconds', type=float,
@@ -585,7 +588,7 @@ def main():
     if args.instance_settings:
         try:
             instance_settings = load_instance_settings(args.instance_settings, instance_storage)
-            clock = boot_clock = apply_instance_settings(instance_storage, instance_settings, here / 'build/instance-props',
+            clock = boot_clock = apply_instance_settings(instance_storage, instance_settings, here / ('build/instance-props' + EXE),
                                                          logdir / 'tmp' if (logdir / 'tmp').is_dir() else tempfile.gettempdir())
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             parser.error('Instance settings failed: ' + str(error))
@@ -682,9 +685,20 @@ def main():
                 parser.error('Instance settings failed: ' + str(error))
         if args.lcd_frame_capture:
             machine += ',lcd-frame-file=' + str(frame_file).replace(',', ',,')
+        if sys.platform == 'win32':
+            # No AF_UNIX for QEMU on Windows: QMP on a loopback port that
+            # qmp.sock publishes (QEMU binds it; QMP itself has no token).
+            if args.bluetooth != 'reject':
+                parser.error('Bluetooth transports are not available on Windows yet')
+            import win32_compat
+            qmp_port = win32_compat.free_port()
+            win32_compat.write_endpoint(qmp_path, qmp_port)
+            qmp_option = f'tcp:127.0.0.1:{qmp_port},server=on,wait=off'
+        else:
+            qmp_option = f'unix:{qmp_path},server=on,wait=off'
         command = [str(args.qemu), '-M', machine, '-display', display_backend,
                    '-monitor', 'none', '-no-reboot', '-kernel', str(args.firmware),
-                   '-qmp', f'unix:{qmp_path},server=on,wait=off',
+                   '-qmp', qmp_option,
                    '-d', 'in_asm,int,unimp,guest_errors' if args.trace else 'guest_errors', '-D', str(logdir / 'qemu.log')]
         if args.bluetooth != 'reject':
             command += ['-chardev', f'socket,id=radio,path={radio_socket}']
@@ -711,7 +725,10 @@ def main():
             print(f'Firmware profile: {args.profile}; logs: {logdir}', flush=True)
         with (logdir / 'stderr.log').open('w') as stderr:
             started = time.monotonic()
-            proc = subprocess.Popen(command, stdout=stderr, stderr=stderr)
+            # Windows: QEMU gets its own console group so the supervisor's
+            # CTRL_BREAK reaches only the runner, as SIGINT does on POSIX.
+            platform = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == 'win32' else {}
+            proc = subprocess.Popen(command, stdout=stderr, stderr=stderr, **platform)
             if virtual_peer is not None: virtual_peer.attach_core(proc.pid)
             control = None
             connection = None
@@ -727,7 +744,19 @@ def main():
                         if time.monotonic() - started > QMP_START_SECONDS:
                             raise RuntimeError('QEMU control socket did not start')
                         time.sleep(.02)
-                    connection = QMP(qmp_path)
+                    if sys.platform == 'win32':
+                        # The endpoint file exists before QEMU listens.
+                        while connection is None:
+                            try:
+                                connection = QMP(qmp_path)
+                            except (ConnectionRefusedError, ConnectionResetError):
+                                if proc.poll() is not None:
+                                    raise RuntimeError('QEMU exited before its control socket started')
+                                if time.monotonic() - started > QMP_START_SECONDS:
+                                    raise RuntimeError('QEMU control socket did not start')
+                                time.sleep(.05)
+                    else:
+                        connection = QMP(qmp_path)
                     control = WatchControl(connection, temporary,
                         bluetooth_log=logdir/'qemu.log' if args.bluetooth in ('hci','bluez') else None,
                         log_directory=logdir, frame_file=frame_file if args.lcd_frame_capture else None)
@@ -1288,7 +1317,7 @@ def main():
             and outcome in ('time_limit', 'interrupted', 'window_closed', 'qemu_stopped', 'guest_poweroff', 'guest_reboot')):
         # Informational snapshot of the firmware's own settings; never a health input.
         try:
-            properties = read_instance_properties(instance_storage, here / 'build/instance-props',
+            properties = read_instance_properties(instance_storage, here / ('build/instance-props' + EXE),
                                                   logdir / 'tmp' if (logdir / 'tmp').is_dir() else tempfile.gettempdir())
             observed = logdir / 'instance-props-observed.json'
             fd = os.open(observed, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)

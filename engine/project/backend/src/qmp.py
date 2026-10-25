@@ -1,6 +1,7 @@
 """Small synchronous QMP client shared by the runner and integration checks."""
 import json
 import socket
+import sys
 import threading
 
 
@@ -8,10 +9,16 @@ class QMP:
     def __init__(self, path, timeout=2):
         self.lock = threading.RLock()
         self.closed = False
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.socket.settimeout(timeout)
+        if sys.platform == 'win32':
+            # QEMU's QMP server listens on loopback TCP; path is its endpoint file.
+            import win32_compat
+            self.socket = win32_compat.connect(path, timeout)
+        else:
+            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.socket.settimeout(timeout)
         try:
-            self.socket.connect(str(path))
+            if sys.platform != 'win32':
+                self.socket.connect(str(path))
             self.stream = self.socket.makefile('rwb')
             self._receive()
             self.execute('qmp_capabilities')
