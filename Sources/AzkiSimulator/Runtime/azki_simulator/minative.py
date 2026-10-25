@@ -171,7 +171,8 @@ def _path(value):
 def _directory_fd(path, *, private=False):
     """Atomically reject every linked component on Darwin without reading parents."""
     path = _path(path)
-    if sys.platform == "darwin":
+    # Windows: win32_compat implements the same O_NOFOLLOW_ANY bit.
+    if sys.platform in ("darwin", "win32"):
         # Darwin SDK sys/fcntl.h: O_NOFOLLOW_ANY rejects symlinks anywhere in
         # one path lookup. Do not fall back after a denial/unsupported kernel:
         # doing so would require reading parent directories outside the grant.
@@ -199,7 +200,7 @@ def _directory_fd(path, *, private=False):
 
 def _open_file(path, limit=MAX_ASSET, *, private=False):
     path = _path(path)
-    if sys.platform == "darwin" and not private:
+    if sys.platform in ("darwin", "win32") and not private:
         # A user-selected input has a literal-file read grant, not a directory
         # listing grant. Atomic full-path nofollow needs only parent traversal.
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | 0x20000000)

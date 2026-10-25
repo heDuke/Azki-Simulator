@@ -56,7 +56,7 @@ def _absolute(path):
 
 def _directory(path):
     value = _absolute(path)
-    if sys.platform == 'darwin':
+    if sys.platform in ('darwin', 'win32'):  # win32_compat implements O_NOFOLLOW_ANY
         fd = os.open(value, os.O_RDONLY | os.O_DIRECTORY | 0x20000000)  # O_NOFOLLOW_ANY
     else:
         fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
@@ -97,7 +97,7 @@ def _read_fd(fd, limit, *, private):
 
 def _read_source(path):
     value = _absolute(path)
-    if sys.platform == 'darwin':
+    if sys.platform in ('darwin', 'win32'):  # win32_compat implements O_NOFOLLOW_ANY
         fd = os.open(value, os.O_RDONLY | os.O_NONBLOCK | 0x20000000)
     else:
         # Source parents need not be private, but no component may be a link.

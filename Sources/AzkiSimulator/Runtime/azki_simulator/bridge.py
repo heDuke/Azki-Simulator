@@ -126,6 +126,12 @@ def private_root(root: Path) -> Path:
         os.close(descriptor)
     except (OSError, ValueError) as error:
         raise BridgeError("unsafe_session", "Session must be a real, private 0700 directory owned by this user") from error
+    if sys.platform == "win32":
+        # Windows endpoints are loopback TCP, published as files at these
+        # paths; only the Unix sun_path limit does not apply.
+        if "," in str(root):
+            raise BridgeError("unsafe_session", "Session path must not contain a comma")
+        return root
     if "," in str(root) or len(os.fsencode(root / ("run-" + "0" * 12) / "qmp.sock")) > 103:
         raise BridgeError("unsafe_session", "Session path is too long for a Unix socket")
     return root
@@ -786,15 +792,22 @@ class SessionBridge:
         if discovery:
             from .discovery import PROTOCOL, publish, withdraw
         path = self.root / "control.sock"
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        # No stale socket deletion: a second bridge cannot take another's session.
-        try:
-            server.bind(str(path))
-        except BaseException:
-            server.close()
-            raise
-        os.chmod(path, 0o600)
-        server.listen(4)
+        if sys.platform == "win32":
+            # Loopback TCP; control.sock holds the port and a per-serve token.
+            # It is created exclusively, so a second bridge still cannot take
+            # another's session.
+            from . import win32_compat
+            server = win32_compat.listen(path, 4)
+        else:
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            # No stale socket deletion: a second bridge cannot take another's session.
+            try:
+                server.bind(str(path))
+            except BaseException:
+                server.close()
+                raise
+            os.chmod(path, 0o600)
+            server.listen(4)
         server.settimeout(.25)
         advertisement = None
         try:
@@ -807,6 +820,12 @@ class SessionBridge:
                     client, _ = server.accept()
                 except socket.timeout:
                     continue
+                if sys.platform == "win32":
+                    from . import win32_compat
+                    try:
+                        win32_compat.authenticate(client, server.azki_token, 2)
+                    except OSError:
+                        continue  # wrong or missing token: closed without a reply
                 with client:
                     client.settimeout(2)
                     try:
@@ -840,9 +859,15 @@ def request(root: Path, command: str, arguments: dict | None = None):
     payload = json.dumps(message).encode() + b"\n"
     if len(payload) > MAX_MESSAGE:
         raise BridgeError("invalid_request", "Request exceeds size limit")
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(10)
-        connection.connect(str(root / "control.sock"))
+    if sys.platform == "win32":
+        from . import win32_compat
+        connection = win32_compat.connect(root / "control.sock", 10)
+    else:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    with connection:
+        if sys.platform != "win32":
+            connection.settimeout(10)
+            connection.connect(str(root / "control.sock"))
         connection.sendall(payload)
         line = receive_line(connection, seconds=20 if command in ("start", "stop") else 10)
         if len(line) > MAX_MESSAGE or not line.endswith(b"\n"):

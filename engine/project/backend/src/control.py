@@ -247,7 +247,7 @@ class WatchControl:
                 path.parent != self.log_directory or path.name != 'lcd-frame.raw'):
             raise RuntimeError('Unsafe QEMU LCD frame path')
         flags = os.O_RDONLY | os.O_NONBLOCK
-        if sys.platform == 'darwin':
+        if sys.platform in ('darwin', 'win32'):  # win32_compat implements O_NOFOLLOW_ANY
             # O_NOFOLLOW_ANY: reject symlinks anywhere without reading parents
             # outside this session's sandbox grant. No permissive fallback.
             fd = os.open(path, flags | 0x20000000)

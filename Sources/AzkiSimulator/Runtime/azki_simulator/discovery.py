@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import sys
 from pathlib import Path
 import re
 import stat
@@ -79,9 +80,14 @@ def _open_directory(path, private=True):
     """Walk all components with NOFOLLOW, pinning each parent while opening."""
     path = _path(path)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    fd = os.open("/", flags)
+    if sys.platform == "win32":
+        # One open of the full path; win32_compat's O_NOFOLLOW_ANY rejects a
+        # reparse point in any component (a walk from "/" loses the drive).
+        fd, components = os.open(path, flags | 0x20000000), ()
+    else:
+        fd, components = os.open("/", flags), path.parts[1:]
     try:
-        for component in path.parts[1:]:
+        for component in components:
             child = os.open(component, flags, dir_fd=fd)
             os.close(fd)
             fd = child
