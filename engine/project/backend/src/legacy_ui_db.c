@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include "win32_compat.h"
+#endif
 #include "unqlite.h"
 
 static const struct { const char *key, *value; } preferences[] = {

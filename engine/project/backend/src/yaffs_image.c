@@ -12,6 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include "win32_compat.h"
+#endif
 #include "yaffsfs.h"
 #include "yaffs_guts.h"
 #include "yaffs_trace.h"

@@ -17,6 +17,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include "win32_compat.h"
+#endif
 #include "yaffsfs.h"
 #include "yaffs_guts.h"
 #include "yaffs_trace.h"
@@ -76,8 +79,14 @@ static int open_image(const char *path, size_t *size, int writing)
 {
     int fd = open(path, (writing ? O_RDWR : O_RDONLY) | O_NOFOLLOW | O_CLOEXEC);
     struct stat st;
+#ifdef _WIN32
+    /* The private session directory ACL replaces the POSIX mode check. */
+    check(fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && azki_win32_private_file(fd),
+          "private image open");
+#else
     check(fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_nlink == 1 &&
           st.st_uid == geteuid() && !(st.st_mode & 077), "private image open");
+#endif
     *size = (size_t)st.st_size;
     return fd;
 }
@@ -229,6 +238,9 @@ int main(int argc, char **argv)
 
     /* The sandboxed runner grants only its own TMPDIR. */
     const char *tmp = getenv("TMPDIR");
+#ifdef _WIN32
+    if (!tmp || !*tmp) tmp = getenv("TEMP");
+#endif
     char dir[1024];
     check(snprintf(dir, sizeof(dir), "%s/instance-props-XXXXXX", tmp && *tmp ? tmp : "/tmp") < (int)sizeof(dir), "temporary path");
     check(mkdtemp(dir) != NULL, "temporary directory");
