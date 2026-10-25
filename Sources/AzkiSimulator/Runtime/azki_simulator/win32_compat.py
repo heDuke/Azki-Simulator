@@ -105,10 +105,14 @@ _kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, cty
 _kernel32.GetCurrentProcess.restype = wintypes.HANDLE
 _kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
 _kernel32.OpenProcess.restype = wintypes.HANDLE
+_kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+_kernel32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
 _kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
 
 _native = {}
 _directories = {}  # descriptor -> absolute directory path
+_executables = {}  # descriptor -> file index of an opened *.exe (fstat has no name)
+_EXECUTABLE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
 _installed = False
 
 
@@ -203,7 +207,16 @@ def _open(path, flags, mode=0o777, *, dir_fd=None):
     if handle == INVALID_HANDLE_VALUE or handle is None:
         raise _error(path)
     try:
-        info = _handle_info(handle)
+        try:
+            info = _handle_info(handle)
+        except OSError:
+            if directory:
+                raise
+            info = None  # A device such as NUL (os.devnull): no file identity.
+        if info is None:
+            _kernel32.CloseHandle(handle)
+            handle = None
+            return _native["open"](path, flags | os.O_BINARY | os.O_NOINHERIT, mode)
         if nofollow and info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
             raise OSError(errno.ELOOP, "Too many levels of symbolic links", path)
         is_directory = bool(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
@@ -214,17 +227,22 @@ def _open(path, flags, mode=0o777, *, dir_fd=None):
         crt_flags = (os.O_RDONLY if access_mode == os.O_RDONLY else 0) | (flags & (os.O_APPEND | os.O_TEXT))
         descriptor = msvcrt.open_osfhandle(handle, crt_flags)
     except BaseException:
-        _kernel32.CloseHandle(handle)
+        if handle is not None:
+            _kernel32.CloseHandle(handle)
         raise
+    _executables.pop(descriptor, None)
     if is_directory:
         _directories[descriptor] = path
     else:
         _directories.pop(descriptor, None)
+        if path.lower().endswith(_EXECUTABLE_SUFFIXES):
+            _executables[descriptor] = (info.nFileIndexHigh << 32) | info.nFileIndexLow
     return descriptor
 
 
 def _close(fd):
     _directories.pop(fd, None)
+    _executables.pop(fd, None)
     return _native["close"](fd)
 
 
@@ -250,18 +268,51 @@ def _normalized(result):
     return os.stat_result(values, extra)
 
 
+_ENDPOINT_PREFIX = b'{"schema": "azki.endpoint.v1"'
+
+
+def _endpoint_file(path, result):
+    """A published loopback endpoint (``*.sock``) stands in for a Unix socket."""
+    if not (stat.S_ISREG(result.st_mode) and result.st_size <= 4096 and os.fspath(path).endswith(".sock")):
+        return False
+    try:
+        with open(path, "rb") as stream:
+            return stream.read(len(_ENDPOINT_PREFIX)) == _ENDPOINT_PREFIX
+    except OSError:
+        return False
+
+
+def _path_stat(path, result):
+    normalized = _normalized(result)
+    if _endpoint_file(path, result):
+        values = list(normalized[:10])
+        values[0] = stat.S_IFSOCK | 0o600
+        extra = {name: getattr(normalized, name) for name in _EXTRA_STAT_FIELDS if hasattr(normalized, name)}
+        return os.stat_result(values, extra)
+    return normalized
+
+
 def _stat(path, *, dir_fd=None, follow_symlinks=True):
     if isinstance(path, int):
         return _fstat(path)
-    return _normalized(_native["stat"](_join(path, dir_fd), follow_symlinks=follow_symlinks))
+    path = _join(path, dir_fd)
+    return _path_stat(path, _native["stat"](path, follow_symlinks=follow_symlinks))
 
 
 def _lstat(path, *, dir_fd=None):
-    return _normalized(_native["lstat"](_join(path, dir_fd)))
+    path = _join(path, dir_fd)
+    return _path_stat(path, _native["lstat"](path))
 
 
 def _fstat(fd):
-    return _normalized(_native["fstat"](fd))
+    result = _native["fstat"](fd)
+    if fd in _executables and _executables[fd] == result.st_ino:
+        # Same file as opened (a reused descriptor number would differ).
+        values = list(result[:10])
+        values[0] |= 0o111
+        extra = {name: getattr(result, name) for name in _EXTRA_STAT_FIELDS if hasattr(result, name)}
+        result = os.stat_result(values, extra)
+    return _normalized(result)
 
 
 def _mkdir(path, mode=0o777, *, dir_fd=None):
@@ -293,6 +344,15 @@ def _rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
 
 def _replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     return _retry_sharing(_native["replace"], _join(src, src_dir_fd), _join(dst, dst_dir_fd))
+
+
+def rename_noreplace(src, src_dir_fd, dst, dst_dir_fd):
+    """renameat2(RENAME_NOREPLACE): False if ``dst`` exists (MoveFileExW without replace)."""
+    try:
+        _rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    except FileExistsError:
+        return False
+    return True
 
 
 def _link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
@@ -353,7 +413,7 @@ class _DirEntry:
         self.path = entry.name if by_descriptor else entry.path
 
     def stat(self, *, follow_symlinks=True):
-        return _normalized(self._entry.stat(follow_symlinks=follow_symlinks))
+        return _path_stat(self._entry.path, self._entry.stat(follow_symlinks=follow_symlinks))
 
     def is_dir(self, *, follow_symlinks=True):
         return self._entry.is_dir(follow_symlinks=follow_symlinks)
@@ -455,6 +515,49 @@ class _JobProcessList(ctypes.Structure):
                 ("ProcessIdList", ctypes.c_size_t * 4096)]
 
 
+class _JobBasicLimits(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD)]
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint64) for name in ("ReadOperationCount", "WriteOperationCount",
+                "OtherOperationCount", "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+
+class _JobExtendedLimits(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _JobBasicLimits), ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+def _creation_time(handle):
+    times = [wintypes.FILETIME() for _ in range(4)]
+    if not _kernel32.GetProcessTimes(handle, *map(ctypes.byref, times)):
+        return None
+    return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+
+
+def _getppid():
+    """POSIX semantics: 1 once the parent has exited (Windows never reparents)."""
+    parent = _native["getppid"]()
+    handle = _kernel32.OpenProcess(0x1000, False, parent)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return 1
+    try:
+        code = wintypes.DWORD()
+        if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:
+            return 1
+        started, own = _creation_time(handle), _creation_time(_kernel32.GetCurrentProcess())
+        # A reused PID belongs to a process created after us.
+        return parent if started is not None and own is not None and started <= own else 1
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
 def group_members(pid):
     """Live process IDs in the group led by ``pid``; [] if there is none."""
     handle = _open_job(pid, JOB_QUERY)
@@ -477,6 +580,14 @@ def setsid():
     handle = _kernel32.CreateJobObjectW(None, _job_name(os.getpid()))
     if not handle:
         raise _error()
+    # Like a POSIX session leader's group, nothing survives the leader: when
+    # its last handle closes, every process still in the job is terminated.
+    limits = _JobExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not _kernel32.SetInformationJobObject(handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+        error = _error()
+        _kernel32.CloseHandle(handle)
+        raise error
     if not _kernel32.AssignProcessToJobObject(handle, _kernel32.GetCurrentProcess()):
         error = _error()
         _kernel32.CloseHandle(handle)
@@ -514,6 +625,16 @@ def _process_alive(pid):
         _kernel32.CloseHandle(handle)
 
 
+def _terminate(pid, code):
+    handle = _kernel32.OpenProcess(0x0001, False, int(pid))  # PROCESS_TERMINATE
+    if not handle:
+        return False
+    try:
+        return bool(_kernel32.TerminateProcess(handle, code))
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
 def _kill(pid, sig):
     if sig == 0:
         # Windows os.kill(pid, 0) would call TerminateProcess(pid, 0).
@@ -528,9 +649,17 @@ def _killpg(pgid, sig):
     if handle is None:
         raise ProcessLookupError(errno.ESRCH, "No such process group")
     try:
+        members = group_members(pgid)
         if sig == 0:
-            if not group_members(pgid):
+            if not members:
                 raise ProcessLookupError(errno.ESRCH, "No such process group")
+            return None
+        if os.getpid() in members:
+            # A POSIX leader survives signalling its own group when it
+            # handles the signal; here only the other members terminate.
+            for pid in members:
+                if pid != os.getpid():
+                    _terminate(pid, 128 + int(sig))
             return None
         if not _kernel32.TerminateJobObject(handle, 128 + int(sig)):
             raise _error()
@@ -699,6 +828,38 @@ def connect(path, timeout=None, *, retry_seconds=0.0):
             raise
 
 
+def stream_server(path, handler, *, token=True):
+    """socketserver.ThreadingTCPServer on loopback, published at ``path``.
+
+    Stands in for ThreadingUnixStreamServer: a client that does not send the
+    endpoint token first is closed before ``handler`` runs.
+    """
+    import socketserver
+
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = False
+
+        def server_bind(self):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            super().server_bind()
+
+        def verify_request(self, request, client_address):
+            try:
+                authenticate(request, self.azki_token, 2)
+            except OSError:
+                return False
+            return True
+
+    server = Server(("127.0.0.1", 0), handler)
+    server.azki_token = secrets.token_hex(TOKEN_BYTES) if token else None
+    try:
+        write_endpoint(path, server.server_address[1], server.azki_token)
+    except BaseException:
+        server.server_close()
+        raise
+    return server
+
+
 def free_port():
     """A currently unused loopback port for a server that cannot report one (QEMU)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -731,7 +892,8 @@ def install():
         return
     import signal
     for name in ("open", "close", "stat", "lstat", "fstat", "mkdir", "rmdir", "unlink", "remove", "rename",
-                 "replace", "link", "readlink", "chmod", "utime", "fsync", "listdir", "scandir", "kill"):
+                 "replace", "link", "readlink", "chmod", "utime", "fsync", "listdir", "scandir", "kill",
+                 "getppid"):
         _native[name] = getattr(os, name)
     _native["abspath"] = os.path.abspath
     os.O_NOFOLLOW, os.O_DIRECTORY, os.O_NONBLOCK, os.O_CLOEXEC = O_NOFOLLOW, O_DIRECTORY, O_NONBLOCK, O_CLOEXEC
@@ -744,6 +906,7 @@ def install():
     os.pread, os.pwrite = _pread, _pwrite
     os.getuid = os.geteuid = os.getgid = os.getegid = _getuid
     os.kill, os.killpg, os.getpgid, os.getpgrp, os.setsid = _kill, _killpg, _getpgid, _getpgrp, setsid
+    os.getppid = _getppid
     if not hasattr(signal, "SIGKILL"):
         signal.SIGKILL = 9
     sys.modules.setdefault("fcntl", _fcntl_module())
