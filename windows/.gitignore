@@ -1,0 +1,13 @@
+# .NET / Visual Studio build output for the Windows port
+bin/
+obj/
+artifacts/
+publish/
+TestResults/
+*.user
+*.suo
+.vs/
+*.binlog
+
+# The repository root .gitignore ignores every "tests" path; keep the Windows test projects.
+!/tests/

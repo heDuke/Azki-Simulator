@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    C# port of Sources/AzkiSimulator/Core (Swift). No UI dependencies, so it targets plain
+    net11.0 and is built and unit-tested on any OS (including Linux CI and local dev boxes).
+    Windows-only APIs (Job Object, ACLs, ...) will live behind OperatingSystem.IsWindows() checks
+    or in Windows-specific files added in later milestones.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(AzkiNetTfm)</TargetFramework>
+    <RootNamespace>Azki.Core</RootNamespace>
+    <AssemblyName>Azki.Core</AssemblyName>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Azki.Core.Tests" />
+  </ItemGroup>
+</Project>

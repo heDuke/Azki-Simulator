@@ -1,0 +1,29 @@
+<Project>
+  <!--
+    Shared settings for every project under windows/.
+    Azki Simulator for Windows is a GPL-2.0-only port of the macOS app (see ../LICENSE).
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <Deterministic>true</Deterministic>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+
+    <Company>Azki Simulator contributors</Company>
+    <Product>Azki Simulator</Product>
+    <Copyright>Azki Simulator contributors, GPL-2.0-only</Copyright>
+    <PackageLicenseExpression>GPL-2.0-only</PackageLicenseExpression>
+    <NeutralLanguage>zh-CN</NeutralLanguage>
+  </PropertyGroup>
+
+  <!-- Single source of truth for the Windows-only target framework (see global.json for the SDK). -->
+  <PropertyGroup>
+    <AzkiNetTfm>net11.0</AzkiNetTfm>
+    <AzkiWindowsTfm>net11.0-windows10.0.26100.0</AzkiWindowsTfm>
+    <AzkiTargetPlatformMinVersion>10.0.26100.0</AzkiTargetPlatformMinVersion>
+  </PropertyGroup>
+</Project>
