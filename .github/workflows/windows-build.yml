@@ -1,0 +1,103 @@
+name: Windows build (WinUI 3)
+
+# Windows port only. Runs for the windows-winui branch; it never runs on main,
+# and it does not change when build-dmg.yml runs.
+on:
+  push:
+    branches: [windows-winui]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows-build.yml'
+  pull_request:
+    branches: [windows-winui]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+
+jobs:
+  build:
+    name: ${{ matrix.rid }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            platform: x64
+            runner: windows-latest
+          - rid: win-arm64
+            platform: ARM64
+            runner: windows-11-arm
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: windows
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs the exact SDK pinned in windows/global.json (.NET 11 RC2).
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: windows/global.json
+
+      - name: Environment
+        run: |
+          dotnet --info
+          [System.Environment]::OSVersion.Version
+          $env:PROCESSOR_ARCHITECTURE
+
+      - name: Restore
+        run: dotnet restore AzkiSimulator.slnx -p:Platform=${{ matrix.platform }}
+
+      - name: Build
+        run: dotnet build AzkiSimulator.slnx --no-restore -c Release -p:Platform=${{ matrix.platform }}
+
+      - name: Test (Azki.Core)
+        run: dotnet test --project tests/Azki.Core.Tests/Azki.Core.Tests.csproj -c Release
+
+      - name: Publish (self-contained, unpackaged)
+        run: >
+          dotnet publish src/Azki.App/Azki.App.csproj -c Release
+          -r ${{ matrix.rid }} -p:Platform=${{ matrix.platform }}
+          -o ${{ github.workspace }}/publish/AzkiSimulator-${{ matrix.rid }}
+
+      # Starts the published app for a few seconds to prove WinUI 3 + .NET 11 actually
+      # initialises on this architecture (not only compiles).
+      - name: Smoke test (launch published app)
+        run: |
+          $exe = Join-Path '${{ github.workspace }}' 'publish/AzkiSimulator-${{ matrix.rid }}/AzkiSimulator.exe'
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) {
+            Get-WinEvent -LogName Application -MaxEvents 20 -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in '.NET Runtime', 'Application Error' } |
+              Format-List TimeCreated, ProviderName, Message
+            throw "AzkiSimulator.exe exited early with code $($p.ExitCode)"
+          }
+          Write-Host "AzkiSimulator.exe is running (pid $($p.Id)); stopping it."
+          Stop-Process -Id $p.Id -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: AzkiSimulator-${{ matrix.rid }}
+          path: publish/AzkiSimulator-${{ matrix.rid }}
+          if-no-files-found: error
+          retention-days: 14
