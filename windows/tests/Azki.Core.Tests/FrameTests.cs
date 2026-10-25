@@ -132,19 +132,19 @@ public sealed class FrameTests
     }
 
     [Fact]
-    public void ReaderNeverBlocksTheWritersReplace()
+    public void ReaderClosesTheFileRightAfterEachRead()
     {
         using var directory = new TemporaryDirectory();
-        var path = Path.Combine(directory.Path, "frame.raw");
-        Publish(directory.Path, SyntheticFrame.Build(2, 192, 490, (_, _) => 1));
-        // A reader that holds the file open with the reader's share mode (as during a read) ...
-        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-        {
-            // ... must not make the writer's os.replace (MoveFileEx REPLACE_EXISTING) fail.
-            Publish(directory.Path, SyntheticFrame.Build(4, 192, 490, (_, _) => 2));
-        }
         var reader = new FrameReader(directory.Path, new DisplayGeometry(192, 490));
+        Publish(directory.Path, SyntheticFrame.Build(2, 192, 490, (_, _) => 1));
+        Assert.Equal(FrameReadStatus.New, reader.Read().Status);
+        Assert.Equal(FrameReadStatus.Unchanged, reader.Read().Status);
+        // No handle is left open: even a classic MoveFileEx replace (which fails on Windows while any
+        // handle is open) and a delete succeed right after a read.
+        Publish(directory.Path, SyntheticFrame.Build(4, 192, 490, (_, _) => 2));
         Assert.Equal(4u, reader.Read().Frame!.Sequence);
+        File.Delete(Path.Combine(directory.Path, "frame.raw"));
+        Assert.Equal(FrameReadStatus.Unavailable, reader.Read().Status);
     }
 
     [Fact]

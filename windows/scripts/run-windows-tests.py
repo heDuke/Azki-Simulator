@@ -8,6 +8,9 @@ test_production_imu_sample_registers (they compile C against host GLib; a
 runner's unrelated pkg-config would make them error rather than skip), and
 test_rejects_symlink_hardlink_and_nonregular_file (os.mkfifo; symlinks need
 Developer Mode on Windows).
+
+test_win32_replace (beside this script) checks the Windows-only os.replace of
+win32_compat while frame.raw is being read.
 """
 from pathlib import Path
 import sys
@@ -27,7 +30,8 @@ def flatten(suite):
 
 
 sys.path.insert(0, str(TESTS))
-loaded = unittest.defaultTestLoader.loadTestsFromNames(MODULES)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+loaded = unittest.defaultTestLoader.loadTestsFromNames(MODULES + ("test_win32_replace",))
 suite = unittest.TestSuite(test for test in flatten(loaded) if test._testMethodName not in SKIPPED)
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)

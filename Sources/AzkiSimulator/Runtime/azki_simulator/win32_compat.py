@@ -108,6 +108,8 @@ _kernel32.OpenProcess.restype = wintypes.HANDLE
 _kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
 _kernel32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
 _kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+_kernel32.SetFileInformationByHandle.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+_kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
 
 _native = {}
 _directories = {}  # descriptor -> absolute directory path
@@ -342,8 +344,43 @@ def _rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     return _retry_sharing(_native["rename"], _join(src, src_dir_fd), _join(dst, dst_dir_fd))
 
 
+FILE_RENAME_INFO_EX = 22  # FILE_INFO_BY_HANDLE_CLASS FileRenameInfoEx (Windows 10 1709+)
+FILE_RENAME_FLAG_REPLACE_IF_EXISTS, FILE_RENAME_FLAG_POSIX_SEMANTICS = 0x1, 0x2
+
+
+def _posix_replace(src, dst):
+    """rename(2)-like replace: succeeds while ``dst`` is open by readers that
+    allow delete sharing (FILE_SHARE_DELETE), which MoveFileEx does not.
+    Raises OSError where the file system lacks POSIX rename (e.g. FAT)."""
+    target = os.path.abspath(os.fsdecode(dst))
+    if not target.startswith("\\\\?\\"):
+        target = ("\\\\?\\UNC\\" + target[2:]) if target.startswith("\\\\") else "\\\\?\\" + target
+    handle = _kernel32.CreateFileW(os.fsdecode(src), DELETE | SYNCHRONIZE, FILE_SHARE_ALL, None, OPEN_EXISTING,
+                                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, None)
+    if handle == INVALID_HANDLE_VALUE or handle is None:
+        raise _error(src)
+    try:
+        length = len(target) * ctypes.sizeof(ctypes.c_wchar)
+
+        class RenameInfo(ctypes.Structure):
+            _fields_ = [("Flags", wintypes.DWORD), ("RootDirectory", wintypes.HANDLE),
+                        ("FileNameLength", wintypes.DWORD), ("FileName", ctypes.c_wchar * (len(target) + 1))]
+
+        info = RenameInfo(FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS, None, length, target)
+        if not _kernel32.SetFileInformationByHandle(handle, FILE_RENAME_INFO_EX, ctypes.byref(info), ctypes.sizeof(info)):
+            raise _error(dst)
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
 def _replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
-    return _retry_sharing(_native["replace"], _join(src, src_dir_fd), _join(dst, dst_dir_fd))
+    src, dst = _join(src, src_dir_fd), _join(dst, dst_dir_fd)
+    try:
+        # frame.raw is replaced up to 60 times a second while the app reads it.
+        return _posix_replace(src, dst)
+    except OSError:
+        pass  # No POSIX rename here (or a real error): MoveFileEx reports it.
+    return _retry_sharing(_native["replace"], src, dst)
 
 
 def rename_noreplace(src, src_dir_fd, dst, dst_dir_fd):
