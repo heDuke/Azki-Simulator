@@ -11,6 +11,7 @@ on:
       - 'Sources/AzkiSimulator/Runtime/**'
       - 'tests/**'
       - 'windows/scripts/**'
+      - 'windows/engine/**'
       - '.github/workflows/windows-engine.yml'
   pull_request:
     branches: [windows-winui]
@@ -19,6 +20,7 @@ on:
       - 'Sources/AzkiSimulator/Runtime/**'
       - 'tests/**'
       - 'windows/scripts/**'
+      - 'windows/engine/**'
       - '.github/workflows/windows-engine.yml'
   workflow_dispatch:
     inputs:
@@ -109,9 +111,33 @@ jobs:
             if ($machines -notmatch "(?m)^$m\s") { throw "machine $m missing" }
           }
 
-      - name: Upload QEMU build
+      - name: Restore pinned Python downloads
+        uses: actions/cache@v6
+        with:
+          path: build/windows-engine/downloads
+          key: engine-downloads-${{ matrix.rid }}-${{ hashFiles('windows/scripts/assemble-engine.ps1') }}
+
+      - name: Assemble Engine bundle
+        run: ./windows/scripts/assemble-engine.ps1 -Arch ${{ matrix.arch }}
+
+      # No firmware: manifest hashes, QEMU machines, the loopback TCP + token
+      # control handshake (a client without the token gets no reply), the
+      # graceful CTRL_BREAK stop, and Job-Object process groups.
+      - name: Engine selftest
+        run: |
+          $bundle = "build/windows-engine/AzkiEngine-win-${{ matrix.arch }}"
+          & "$bundle/azki-engine.cmd" selftest --require-graceful-stop
+          if ($LASTEXITCODE) { throw "selftest failed ($LASTEXITCODE)" }
+
+      - name: Python unit tests (Windows-applicable upstream tests)
+        run: |
+          $python = "build/windows-engine/AzkiEngine-win-${{ matrix.arch }}/Engine/python/python.exe"
+          & $python -B -X utf8 windows/scripts/run-windows-tests.py
+          if ($LASTEXITCODE) { throw "unit tests failed ($LASTEXITCODE)" }
+
+      - name: Upload Engine bundle
         uses: actions/upload-artifact@v7
         with:
-          name: qemu-${{ matrix.rid }}
-          path: build/windows-engine/qemu-win-${{ matrix.arch }}
+          name: AzkiEngine-${{ matrix.rid }}
+          path: build/windows-engine/AzkiEngine-win-${{ matrix.arch }}
           retention-days: 14

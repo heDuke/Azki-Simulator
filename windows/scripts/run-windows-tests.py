@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0-only
+"""Run the upstream Python unit tests that apply to Windows.
+
+Modules here are pure Python (their C parts skip without a GLib compiler).
+Excluded, because they exercise POSIX-only primitives: test_developer_storage
+(Darwin renameatx_np), test_gpu_*/test_touch_sleep (C + GLib builds), and
+test_rejects_symlink_hardlink_and_nonregular_file (os.mkfifo; symlinks need
+Developer Mode on Windows).
+"""
+from pathlib import Path
+import sys
+import unittest
+
+TESTS = Path(__file__).resolve().parents[2] / "tests"
+MODULES = ("test_frame_raw", "test_device_parameters", "test_orientation")
+SKIPPED = {"test_rejects_symlink_hardlink_and_nonregular_file"}
+
+
+def flatten(suite):
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from flatten(item)
+        else:
+            yield item
+
+
+sys.path.insert(0, str(TESTS))
+loaded = unittest.defaultTestLoader.loadTestsFromNames(MODULES)
+suite = unittest.TestSuite(test for test in flatten(loaded) if test._testMethodName not in SKIPPED)
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+sys.exit(0 if result.wasSuccessful() else 1)
