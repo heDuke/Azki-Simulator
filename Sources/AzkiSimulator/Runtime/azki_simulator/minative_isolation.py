@@ -16,6 +16,8 @@ def execution_prefix(adapter):
     plan, run = adapter.plan, adapter.run_root
     identity = plan["identity"]
     generated = identity.get("mode") == "generated"
+    if sys.platform == "win32":
+        return _windows_prefix(adapter, identity, generated)
     if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").is_file():
         raise MError("isolation_unavailable", "Required macOS sandbox launcher is unavailable")
     if not generated and not identity["profile"].get("resource_path"):
@@ -104,3 +106,18 @@ def execution_prefix(adapter):
     return (sys.executable, "-I", "-S", str(Path(__file__).with_name("minative_launch.py")),
             str(adapter.seconds + 15 if adapter.seconds else 0), str(adapter.runner_metadata), str(os.getpid()),
             "/usr/bin/sandbox-exec", "-f", str(policy))
+
+
+def _windows_prefix(adapter, identity, generated):
+    """Windows: the same fixed supervisor, without a macOS sandbox profile.
+
+    minative_launch.py places itself, the runner and QEMU in one
+    kill-on-close Job Object (the process group). There is no file-system
+    sandbox on Windows yet; every input is still pinned by the plan and all
+    writes target this session's private run directory.
+    """
+    if not generated and not identity["profile"].get("resource_path"):
+        raise MError("isolation_unavailable", "Resource cache generation is outside this read-only launch policy")
+    return (sys.executable, "-I", "-S", str(Path(__file__).with_name("minative_launch.py")),
+            str(adapter.seconds + 15 if adapter.seconds else 0), str(adapter.runner_metadata), str(os.getpid()),
+            "--windows-job")

@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import socket
 import stat
+import sys
 import time
 import uuid
 
@@ -249,9 +250,15 @@ def execute(adapter, command, arguments):
         if len(payload) > MAX_REQUEST:
             raise MError("invalid_guest_operation", "设备操作请求过大")
         check_current()
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(_remaining(deadline))
-            connection.connect(str(path))
+        if sys.platform == "win32":
+            from . import win32_compat
+            connection = win32_compat.connect(path, _remaining(deadline))
+        else:
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with connection:
+            if sys.platform != "win32":
+                connection.settimeout(_remaining(deadline))
+                connection.connect(str(path))
             if _peer_identity(connection) != (runner_pid, os.getuid()):
                 raise MError("peer_identity", "虚拟通信进程不属于本实例")
             after = path.lstat()

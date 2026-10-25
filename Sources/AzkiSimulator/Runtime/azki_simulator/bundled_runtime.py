@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import stat
+import sys
 
 from .firmware_catalog import (CatalogError, FirmwareCatalog, _atomic_json, _copy,
                                EXECUTION_PROFILES, _need, _sha, _text, storage_mode)
@@ -21,6 +22,16 @@ SCHEMA = "azki.simulator.engine.v1"
 MAX_ENGINE_FILES = 20000
 MAX_ENGINE_BYTES = 2 * 1024**3
 RUN_LIMIT_SECONDS = 0  # Interactive sessions run until explicitly stopped.
+if sys.platform == "win32":
+    # Windows Engine (windows/scripts/assemble-engine.ps1): the embeddable
+    # CPython with its standard library extracted to python/Lib.
+    ENTRYPOINTS = {"python": "python/python.exe", "qemu": "project/backend/build/qemu-system-arm.exe",
+                   "project": "project", "bootstrap": "bootstrap.py"}
+    PYTHON_STDLIB, PYTHON_SITE_PACKAGES = "python/Lib", "python/Lib/site-packages"
+else:
+    ENTRYPOINTS = {"python": "python/bin/python3.12", "qemu": "project/backend/build/qemu-system-arm",
+                   "project": "project", "bootstrap": "bootstrap.py"}
+    PYTHON_STDLIB, PYTHON_SITE_PACKAGES = "python/lib/python3.12", "python/lib/python3.12/site-packages"
 
 
 def _relative(value):
@@ -40,12 +51,11 @@ def _manifest(engine_root, verify=False):
           "invalid_engine", "内置引擎清单版本不受支持")
     entries, python, files = (manifest.get(key) for key in ("entrypoints", "python", "files"))
     _need(isinstance(entries, dict) and set(entries) == {"python", "qemu", "project", "bootstrap"}
-          and entries == {"python": "python/bin/python3.12", "qemu": "project/backend/build/qemu-system-arm",
-                          "project": "project", "bootstrap": "bootstrap.py"}
+          and entries == ENTRYPOINTS
           and isinstance(python, dict) and python.get("version") == "3.12"
           and python.get("startupFlags") == ["-I", "-S", "-B"]
-          and python.get("stdlib") == "python/lib/python3.12"
-          and python.get("sitePackages") == "python/lib/python3.12/site-packages"
+          and python.get("stdlib") == PYTHON_STDLIB
+          and python.get("sitePackages") == PYTHON_SITE_PACKAGES
           and isinstance(files, list) and 0 < len(files) <= MAX_ENGINE_FILES,
           "invalid_engine", "内置引擎入口或 Python 布局无效")
     by_path, total = {}, 0

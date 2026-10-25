@@ -293,6 +293,9 @@ def _copy(source, target, *, directory_fd=None, created=None, hash_content=True)
 
 def _publish_object(source_fd, name, target_fd):
     """Atomic no-replace rename; never overwrite even a competing new object."""
+    if sys.platform == "win32":
+        from . import win32_compat
+        return win32_compat.rename_noreplace(name, source_fd, name, target_fd)
     libc = ctypes.CDLL(None, use_errno=True)
     function = "renameatx_np" if sys.platform == "darwin" else "renameat2"
     call = getattr(libc, function, None)

@@ -106,6 +106,16 @@ class _BSDInfo(ctypes.Structure):
 
 def _process_started(pid):
     """(uid, start seconds) of a live process, None if gone, ... if unknown."""
+    if sys.platform == "win32":
+        import psutil  # Vendored in the Windows Engine; the only libproc stand-in.
+        try:
+            process = psutil.Process(pid)
+            same_user = process.username() == psutil.Process().username()
+            return (os.getuid() if same_user else -1), process.create_time()
+        except psutil.NoSuchProcess:
+            return None
+        except psutil.Error:
+            return ...
     if sys.platform != "darwin":
         return ...
     try:
@@ -152,6 +162,15 @@ def pid_alive(pid, recorded_at=None):
 
 
 def _socket_alive(path):
+    if sys.platform == "win32":
+        from . import win32_compat
+        try:
+            win32_compat.connect(path, 0.5).close()
+            return True
+        except (ConnectionRefusedError, FileNotFoundError):
+            return False
+        except (OSError, ValueError):
+            return None
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     probe.settimeout(0.5)
     try:

@@ -83,6 +83,8 @@ def profile_in_scope(profile_id):
     return profile_id in INCLUDED_PROFILE_IDS or generated_profile(profile_id) is not None
 
 
+# Engine helper executables carry .exe only on Windows.
+EXE = ".exe" if sys.platform == "win32" else ""
 MAX_RUN_SECONDS = 28800
 # Long interactive sessions append to qemu.log; generated assets live outside the run directory.
 MAX_OUTPUT_FILE = 512 * 1024 * 1024
@@ -872,7 +874,7 @@ def inspect_backend(project, python, profile_id, *, prepared, dependency_paths=(
     identity = {"schema": SCHEMA, "hashVerification": "not-required-for-startup", "project": str(project), "profile": profile,
                 "catalog": pin(project / "profiles/catalog.json"),
                 "scope": pin(project / "profiles/mi-band-scope.json"),
-                "python": _python_identity(python, pin=pin), "qemu": pin(project / "backend/build/qemu-system-arm"),
+                "python": _python_identity(python, pin=pin), "qemu": pin(project / ("backend/build/qemu-system-arm" + EXE)),
                 "runtime": source_manifest, "runtimeSHA256": _digest(source_manifest),
                 "importableSource": extra_runtime, "adapter": pin(Path(__file__).absolute()),
                 # Absolute pins let the sandbox grant exactly these non-Python runtime
@@ -900,11 +902,11 @@ def inspect_backend(project, python, profile_id, *, prepared, dependency_paths=(
     if bootstrap is not None:
         identity["bootstrap"] = pin(_path(bootstrap), MAX_JSON)
     if storage == "yaffs":
-        identity["builders"] = [pin(project / "backend/build" / name) for name in ("yaffs-image", "legacy-ui-db")]
+        identity["builders"] = [pin(project / "backend/build" / (name + EXE)) for name in ("yaffs-image", "legacy-ui-db")]
     # Every supported band keeps /data (persist.db) on a YAFFS NAND partition,
     # including ROMFS-resource models; the settings tool is pinned for all.
-    if (project / "backend/build/instance-props").is_file():
-        identity.setdefault("builders", []).append(pin(project / "backend/build/instance-props"))
+    if (project / ("backend/build/instance-props" + EXE)).is_file():
+        identity.setdefault("builders", []).append(pin(project / ("backend/build/instance-props" + EXE)))
     if identity.get("builders"):
         # The builders compile/read these vendored sources inside the sandbox.
         references = project / "references"
@@ -922,6 +924,11 @@ def inspect_backend(project, python, profile_id, *, prepared, dependency_paths=(
                      "engine_root": str(_path(engine_root)) if engine_root is not None else None,
                      **({"instance_storage": binding} if instance_storage is not None else {}),
                      "bridge_paths": [str(_path(p)) for p in bridge_paths]}}
+
+
+def _windows_absolute(path):
+    """Windows drive/UNC paths are absolute too; always False elsewhere."""
+    return sys.platform == "win32" and os.path.isabs(path)
 
 
 def revalidate_plan(plan):
@@ -942,7 +949,8 @@ def revalidate_plan(plan):
     def visit(value):
         if isinstance(value, dict):
             path = value.get("path")
-            if isinstance(path, str) and path.startswith("/") and "bytes" in value and path not in seen:
+            if (isinstance(path, str) and (path.startswith("/") or _windows_absolute(path))
+                    and "bytes" in value and path not in seen):
                 seen.add(path)
                 fd, info = _open_file(_path(path))
                 os.close(fd)
@@ -1007,11 +1015,22 @@ def _peer_identity(sock):
     if sys.platform.startswith("linux"):
         pid, uid, _ = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         return pid, uid
+    if sys.platform == "win32":
+        # Loopback TCP: the owning PID from the kernel TCP table, plus the
+        # endpoint token the client already sent.
+        from . import win32_compat
+        try:
+            return win32_compat.peer_identity(sock)
+        except OSError as error:
+            raise MError("peer_identity", "Cannot authenticate the loopback peer") from error
     raise MError("peer_identity", "Kernel peer PID authentication is unavailable")
 
 
 def _group_members(group):
     """Darwin's killpg(pgid, 0) may report EPERM for an already empty group."""
+    if sys.platform == "win32":
+        from . import win32_compat
+        return win32_compat.group_members(group)  # The group's Job Object
     if sys.platform != "darwin":
         try:
             os.killpg(group, 0)
@@ -1132,6 +1151,11 @@ class MinativeAdapter:
         env = {"PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8",
                "HOME": str(self.run), "TMPDIR": str(self.run / "tmp"),
                "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"}
+        if sys.platform == "win32":
+            # Winsock and CPython need SYSTEMROOT; temporary files stay in the run.
+            system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+            env.update(SYSTEMROOT=system_root, PATH=system_root + r"\System32;" + system_root,
+                       TEMP=str(self.run / "tmp"), TMP=str(self.run / "tmp"), USERPROFILE=str(self.run))
         command = ([spec["python"], "-I", "-S", "-B", spec["bootstrap"], "--project", spec["project"],
                     "--runner", "multi_device.py", "--"] if spec.get("bootstrap") else
                    [spec["python"], "-B", "-s", "-E", str(Path(spec["project"]) / "multi_device.py")])
@@ -1160,7 +1184,7 @@ class MinativeAdapter:
                 (self.run / "tmp").mkdir(mode=0o700)
             else:
                 self.native_broker.check()
-            if len(os.fsencode(self.run / "tmp/q66-qmp-12345678/input.sock")) > 103:
+            if sys.platform != "win32" and len(os.fsencode(self.run / "tmp/q66-qmp-12345678/input.sock")) > 103:
                 raise MError("unsafe_session", "Run path is too long for bounded Unix sockets")
             try:
                 if self.native_broker is not None:
@@ -1169,9 +1193,12 @@ class MinativeAdapter:
                     spec = self.launch_spec()
                     fd = os.open(self.run / "adapter-runner.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                     self._log = os.fdopen(fd, "wb")
+                    # Windows: its own console group receives the CTRL_BREAK stop.
+                    platform = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                                if sys.platform == "win32" else {})
                     self.process = subprocess.Popen([*self.execution_prefix, *spec["command"]], cwd=spec["cwd"],
                         env=spec["env"], stdin=subprocess.DEVNULL, stdout=self._log, stderr=self._log,
-                        close_fds=True, start_new_session=True, umask=0o077)
+                        close_fds=True, start_new_session=True, umask=0o077, **platform)
             except BaseException:
                 if self._log:
                     self._log.close()
@@ -1403,9 +1430,15 @@ class MinativeAdapter:
         before = path.lstat()
         runner_pid = self._runner_pid()
         deadline = time.monotonic() + timeout
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(max(.001, deadline - time.monotonic()))
-            connection.connect(str(path))
+        if sys.platform == "win32":
+            from . import win32_compat
+            connection = win32_compat.connect(path, max(.001, deadline - time.monotonic()))
+        else:
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with connection:
+            if sys.platform != "win32":
+                connection.settimeout(max(.001, deadline - time.monotonic()))
+                connection.connect(str(path))
             if _peer_identity(connection) != (runner_pid, os.getuid()):
                 raise MError("peer_identity", "Input peer is not this owned runner")
             after = path.lstat()
@@ -1581,7 +1614,9 @@ class MinativeAdapter:
             # trusted prefix supervisor must forward/catch this bounded stop.
             if self.process.poll() is None:
                 try:
-                    self.process.send_signal(signal.SIGINT)
+                    # Windows has no SIGINT for another process: CTRL_BREAK
+                    # reaches the supervisor's own console group instead.
+                    self.process.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGINT)
                     self.process.wait(timeout=9)
                 except subprocess.TimeoutExpired:
                     pass

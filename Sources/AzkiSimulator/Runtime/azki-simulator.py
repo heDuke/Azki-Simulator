@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import signal
 import sys
+import tempfile
 
 # The bundled interpreter runs with -I -S -B. Import only this app's adjacent
 # authored modules, never a cwd/PYTHONPATH/user-site package or .pth hook.
@@ -62,7 +63,9 @@ def main():
             library.add_argument("--instance-id", required=True)
         if action == "sessions-cleanup":
             # Tests point this at a scratch folder; the app always uses /private/tmp.
-            library.add_argument("--tmp-root", type=Path, default=Path("/private/tmp"), help=argparse.SUPPRESS)
+            # Windows sessions live under the user's %TEMP%.
+            default_tmp = Path(tempfile.gettempdir()) if sys.platform == "win32" else Path("/private/tmp")
+            library.add_argument("--tmp-root", type=Path, default=default_tmp, help=argparse.SUPPRESS)
         if action == "instance-settings":
             library.add_argument("--instance-id", required=True)
             library.add_argument("--set", help="Replace the instance settings with this JSON document")
@@ -175,6 +178,8 @@ def main():
             bridge = SessionBridge(args.session, hashes if all(hashes.values()) else None, args.max_runtime, args.allow_private_memfd)
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: bridge.shutdown.set())
+        if sys.platform == "win32":
+            signal.signal(signal.SIGBREAK, lambda *_: bridge.shutdown.set())  # Ctrl+Break / CTRL_BREAK_EVENT
         bridge.serve(discovery=not args.no_discovery)
         return 0
     print(json.dumps(result, ensure_ascii=False, indent=2))

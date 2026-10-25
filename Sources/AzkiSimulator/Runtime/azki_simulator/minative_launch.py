@@ -8,6 +8,16 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import sys
+if sys.platform == "win32":
+    # Job-Object process groups and the POSIX stand-ins this supervisor uses
+    # (resource, killpg, setsid). -I keeps the package off sys.path.
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("win32_compat", Path(__file__).with_name("win32_compat.py"))
+    win32_compat = importlib.util.module_from_spec(_spec)
+    sys.modules["win32_compat"] = win32_compat
+    _spec.loader.exec_module(win32_compat)
+    win32_compat.install()
 import resource
 import re
 import select
@@ -45,6 +55,8 @@ def publish_metadata(path, child_pid):
 
 
 def group_members():
+    if sys.platform == "win32":
+        return [pid for pid in win32_compat.group_members(os.getpid()) if pid != os.getpid()]
     library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
     function = library.proc_listpids
     function.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int)
@@ -60,7 +72,8 @@ def terminate_group(child):
     # First let the runner collect result.json and close its sole QMP channel.
     if child.poll() is None:
         try:
-            child.send_signal(signal.SIGINT)
+            # Windows: CTRL_BREAK to the runner's own console group.
+            child.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGINT)
         except ProcessLookupError:
             pass
     deadline = time.monotonic() + STOP_GRACE_SECONDS
@@ -195,6 +208,15 @@ def main():
             os.setsid()
         if os.getpgrp() != os.getpid():
             raise SystemExit("Native guest failed to establish its owned process group")
+    elif sys.platform == "win32":
+        duration, metadata, parent = int(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
+        if (not 0 <= duration <= MAX_RUN_SECONDS + 15 or os.getppid() != parent or
+                sys.argv[4] != "--windows-job" or metadata.name != "runner-process.json"):
+            raise SystemExit("Invalid isolated runner invocation")
+        os.setsid()  # A kill-on-close Job Object that the runner and QEMU inherit.
+        if os.getpgrp() != os.getpid():
+            raise SystemExit("Supervisor failed to establish its owned process group")
+        command = sys.argv[5:]
     else:
         duration, metadata, parent = int(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
         if (sys.platform != "darwin" or not 0 <= duration <= MAX_RUN_SECONDS + 15 or
@@ -217,10 +239,14 @@ def main():
         stopping = True
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    if sys.platform == "win32":
+        signal.signal(signal.SIGBREAK, stop)  # The adapter's CTRL_BREAK stop.
     deadline = time.monotonic() + duration if duration else None
     if native:
         await_native_go(parent, lambda: stopping)
-    child = subprocess.Popen(command, close_fds=True, stdin=subprocess.DEVNULL if native else None)
+    # Windows: the runner gets its own console group for the CTRL_BREAK stop.
+    platform = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {}
+    child = subprocess.Popen(command, close_fds=True, stdin=subprocess.DEVNULL if native else None, **platform)
     try:
         publish_metadata(metadata, child.pid)
         while child.poll() is None:

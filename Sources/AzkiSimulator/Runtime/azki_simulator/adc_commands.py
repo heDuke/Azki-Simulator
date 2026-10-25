@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import socket
 import stat
+import sys
 import time
 
 from .minative import MError, _canonical, _decode, _inside_private, _peer_identity
@@ -138,9 +139,15 @@ def runner_exchange(adapter, request, *, write, deadline):
         if not stat.S_ISSOCK(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o077:
             raise MError("unsafe_control", "Input endpoint must be this user's private socket")
         runner_pid = adapter._runner_pid()
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(_remaining(deadline))
-            connection.connect(str(path))
+        if sys.platform == "win32":
+            from . import win32_compat
+            connection = win32_compat.connect(path, _remaining(deadline))
+        else:
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with connection:
+            if sys.platform != "win32":
+                connection.settimeout(_remaining(deadline))
+                connection.connect(str(path))
             if _peer_identity(connection) != (runner_pid, os.getuid()):
                 raise MError("peer_identity", "Input socket peer is not this instance's owned runner")
             after = path.lstat()
