@@ -47,6 +47,12 @@ if [ ! -f "$source_dir/.azki-extracted" ]; then
 fi
 # Like build-engine.py: copy the overlay over the pristine tree every build.
 cp -R "$root/engine/qemu-overlay/." "$source_dir/"
+# Build-tool fix only (not part of the emulator): QEMU 10.1's mkvenv passes
+# pip "--find-links file://D:/..." for its bundled wheels, which current pip
+# on Windows rejects as a URL with host "D:". A plain path works everywhere.
+sed -i 's|\["--find-links", f"file://{str(wheels_dir)}"\]|["--find-links", str(wheels_dir)]|' \
+  "$source_dir/python/scripts/mkvenv.py"
+grep -q '"--find-links", str(wheels_dir)' "$source_dir/python/scripts/mkvenv.py"
 
 build_dir="$work/qemu-build-$MSYSTEM"
 mkdir -p "$build_dir"
