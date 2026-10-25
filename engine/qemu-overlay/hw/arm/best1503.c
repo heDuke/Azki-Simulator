@@ -254,6 +254,7 @@ struct Best1503State {
     bool panel_te_fixture, panel_te_enabled, panel_awake, panel_display_on;
     bool panel_partial_mode, panel_idle_mode;
     bool panel_te_high;
+    bool quiet_panel_te_log; /* off by default; the Windows runner sets it */
     QEMUTimer *panel_te_timer;
     QEMUTimer *touch_irq_timer;
     qemu_irq panel_te_irq;
@@ -3153,9 +3154,11 @@ static void panel_te_edge(void *opaque)
     if (!(g->regs[1] & bit) && (g->regs[0x38 / 4] & bit) &&
         !!(g->regs[0x3c / 4] & bit) == s->panel_te_high) {
         g->pending |= bit;
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "BES experimental panel TE edge: pin=%u level=%u (60 Hz fixture)\n",
-                      s->panel_te_pin, s->panel_te_high);
+        if (!s->quiet_panel_te_log) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "BES experimental panel TE edge: pin=%u level=%u (60 Hz fixture)\n",
+                          s->panel_te_pin, s->panel_te_high);
+        }
     }
     panel_te_update_irq(s);
     panel_te_update(s);
@@ -4693,6 +4696,16 @@ static void best1503_set_panel_te_fixture(Object *obj, bool value, Error **errp)
     ((Best1503State *)obj)->panel_te_fixture = value;
 }
 
+static bool best1503_get_quiet_panel_te_log(Object *obj, Error **errp)
+{
+    return ((Best1503State *)obj)->quiet_panel_te_log;
+}
+
+static void best1503_set_quiet_panel_te_log(Object *obj, bool value, Error **errp)
+{
+    ((Best1503State *)obj)->quiet_panel_te_log = value;
+}
+
 static bool best1503_get_bt_hci_reset_fixture(Object *obj, Error **errp)
 {
     return ((Best1503State *)obj)->bt_hci_reset_fixture;
@@ -5431,6 +5444,10 @@ static void best1503_class_init(ObjectClass *oc, const void *data)
         best1503_get_panel_te_fixture, best1503_set_panel_te_fixture);
     object_class_property_set_description(oc, "panel-te-fixture",
         "Experimental 60 Hz TE signal on GPIO65 with IRQ44; no GPU pixels");
+    object_class_property_add_bool(oc, "quiet-panel-te-log",
+        best1503_get_quiet_panel_te_log, best1503_set_quiet_panel_te_log);
+    object_class_property_set_description(oc, "quiet-panel-te-log",
+        "Do not log each 60 Hz panel TE edge (the signal and IRQ are unchanged)");
     object_class_property_add_bool(oc, "bt-hci-reset-fixture",
         best1503_get_bt_hci_reset_fixture, best1503_set_bt_hci_reset_fixture);
     object_class_property_set_description(oc, "bt-hci-reset-fixture",

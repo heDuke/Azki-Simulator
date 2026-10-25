@@ -690,6 +690,10 @@ def main():
             # qmp.sock publishes (QEMU binds it; QMP itself has no token).
             if args.bluetooth != 'reject':
                 parser.error('Bluetooth transports are not available on Windows yet')
+            if machine.split(',', 1)[0] == 'best1503':
+                # Each 60 Hz TE edge would add a qemu.log line (~0.25 MB/min
+                # while the panel is on); the edges and IRQs still happen.
+                machine += ',quiet-panel-te-log=on'
             import win32_compat
             qmp_port = win32_compat.free_port()
             win32_compat.write_endpoint(qmp_path, qmp_port)
