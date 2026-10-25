@@ -12,6 +12,10 @@ on:
       - 'tests/**'
       - 'windows/scripts/**'
       - 'windows/engine/**'
+      - 'windows/src/**'
+      - 'windows/tests/**'
+      - 'windows/*.props'
+      - 'windows/global.json'
       - '.github/workflows/windows-engine.yml'
   pull_request:
     branches: [windows-winui]
@@ -21,6 +25,10 @@ on:
       - 'tests/**'
       - 'windows/scripts/**'
       - 'windows/engine/**'
+      - 'windows/src/**'
+      - 'windows/tests/**'
+      - 'windows/*.props'
+      - 'windows/global.json'
       - '.github/workflows/windows-engine.yml'
   workflow_dispatch:
     inputs:
@@ -58,6 +66,8 @@ jobs:
         shell: pwsh
     env:
       PYTHONDONTWRITEBYTECODE: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -140,4 +150,44 @@ jobs:
         with:
           name: AzkiEngine-${{ matrix.rid }}
           path: build/windows-engine/AzkiEngine-win-${{ matrix.arch }}
+          retention-days: 14
+
+      # The app half: Azki.Core against this very bundle, then one artifact with
+      # AzkiSimulator.exe and the engine side by side (engine\ next to the exe).
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: windows/global.json
+
+      - name: Azki.Core tests against the Engine bundle
+        working-directory: windows
+        run: |
+          $env:AZKI_ENGINE_BUNDLE = (Resolve-Path "../build/windows-engine/AzkiEngine-win-${{ matrix.arch }}").Path
+          dotnet test --project tests/Azki.Core.Tests/Azki.Core.Tests.csproj -c Release
+          if ($LASTEXITCODE) { throw "Azki.Core tests failed ($LASTEXITCODE)" }
+
+      - name: Publish app with the engine
+        working-directory: windows
+        run: |
+          $platform = @{ 'win-x64' = 'x64'; 'win-arm64' = 'ARM64' }['${{ matrix.rid }}']
+          $out = "${{ github.workspace }}/publish/AzkiSimulator-full-${{ matrix.rid }}"
+          dotnet publish src/Azki.App/Azki.App.csproj -c Release -r ${{ matrix.rid }} -p:Platform=$platform -o $out
+          if ($LASTEXITCODE) { throw "publish failed ($LASTEXITCODE)" }
+          Copy-Item -Recurse "../build/windows-engine/AzkiEngine-win-${{ matrix.arch }}" "$out/engine"
+          if (-not (Test-Path "$out/engine/Engine/manifest.json")) { throw "engine missing from the app folder" }
+
+      - name: Smoke test (app starts next to its engine)
+        run: |
+          $exe = "${{ github.workspace }}/publish/AzkiSimulator-full-${{ matrix.rid }}/AzkiSimulator.exe"
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) { throw "AzkiSimulator.exe exited early with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+
+      - name: Upload app + engine
+        uses: actions/upload-artifact@v7
+        with:
+          name: AzkiSimulator-full-${{ matrix.rid }}
+          path: publish/AzkiSimulator-full-${{ matrix.rid }}
+          if-no-files-found: error
           retention-days: 14

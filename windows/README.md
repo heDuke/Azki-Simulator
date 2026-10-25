@@ -3,8 +3,8 @@
 这是 Azki Simulator 的 Windows 原生桌面端移植（WinUI 3 + .NET 11），位于 `windows-winui` 分支。
 macOS 版（Swift，`Sources/AzkiSimulator`）不受影响；Python 运行时与 QEMU 引擎继续使用仓库原位置的代码。
 
-> 当前进度：**M1 引擎**。WinUI 窗口仍是 M0 的空壳；模拟器引擎（定制 QEMU + Python 运行时）已能在 Windows 上
-> 通过命令行运行（见下文“引擎（M1）”）。画面显示（M2）等将在后续里程碑中实现。
+> 当前进度：**M2 画面显示**。在 App 里选择固件、选择机型、启动，就能看到实时刷新的设备画面（见下文“App（M2）”）。
+> 触控（M3，已有一个简单预览）、实例库、设置、日志等将在后续里程碑中实现。引擎也可以单独通过命令行运行（见“引擎（M1）”）。
 
 ## 目录结构
 
@@ -84,6 +84,72 @@ x64 版本也能在 ARM64 设备上通过仿真运行，但请在 ARM64 设备�
 1. 打开 `windows\AzkiSimulator.slnx`。
 2. 工具栏平台选择 **x64** 或 **ARM64**（与本机一致），启动项目选 `Azki.App`，配置文件为 “Azki.App (Unpackaged)”。
 3. 按 F5 运行；“测试资源管理器”中可运行 `Azki.Core.Tests`。
+
+## App（M2）：在窗口里运行模拟器
+
+### 下载
+
+在 GitHub Actions 的 **Windows engine (QEMU + Python runtime)** 运行页面下载与本机架构一致的产物：
+
+| 产物 | 内容 |
+| --- | --- |
+| `AzkiSimulator-full-win-x64` / `AzkiSimulator-full-win-arm64` | **推荐**：`AzkiSimulator.exe` 加同级的 `engine\`（完整引擎包），解压即可运行 |
+| `AzkiEngine-win-*` | 只有引擎（命令行用，见下文 M1） |
+| `AzkiSimulator-win-*`（Windows build 工作流） | 只有 App，不含引擎 |
+
+解压到**只含 ASCII 字符、不含逗号**的目录（例如 `C:\Azki\AzkiSimulator-full-win-x64`）。QEMU 只能接收 ASCII 路径。
+
+### 程序如何找到引擎
+
+按顺序查找，找到第一个完整的引擎包（含 `Engine\manifest.json`、Python 和 `Runtime\azki-simulator.py`）就使用它：
+
+1. 环境变量 `AZKI_ENGINE_BUNDLE` 指向的目录；
+2. `AzkiSimulator.exe` 同级的 `engine\`、`AzkiEngine-win-<架构>\`、`AzkiEngine\`；
+3. 上一级目录中的同名目录（例如把 `AzkiSimulator-win-x64` 和 `AzkiEngine-win-x64` 两个产物解压到同一个父目录下）。
+
+如果都没找到，工作区顶部会显示“引擎缺失”，并列出查找过的路径。
+
+数据（导入的固件库、会话）放在 `%LOCALAPPDATA%\AzkiSimulator\{Library,Sessions}`。如果这个路径含非 ASCII 字符
+（例如中文用户名），会改用 `%SystemDrive%\AzkiSimulatorData`。也可以用环境变量 `AZKI_DATA_ROOT` 指定其他目录。
+
+### 使用
+
+1. 运行 `AzkiSimulator.exe`，进入“工作区”。
+2. 点“浏览…”选择 OTA 包（例如 `xxxx_upd_miwear.zip`），或者把路径粘贴进输入框后按 Enter。程序会导入固件，并识别它适用的机型。
+3. 如果固件适用于多个机型（例如小米手环 10 Pro 的金属版和陶瓷版），在“设备型号”里选择一个。只有一个机型时会自动选中。
+4. 点“启动”。状态行依次显示“正在准备会话并启动引擎…”和“运行中 mm:ss · 状态 running/running · 336×480 · …”。
+   **固件开机需要时间**：第一帧（黑屏上的启动动画）大约在 5–10 秒出现，表盘大约在 20–60 秒后出现，ARM64 上可能更慢。
+   程序在这期间不会超时。
+5. 右侧是实时画面（按设备比例缩放）。用鼠标在画面上点按或拖动可以操作手环；这是 M3 的初步预览，例如从上往下拖动会打开消息页。
+6. 点“停止”，或者直接关闭窗口（会先停止模拟器，最多等待 20 秒）。
+
+出错时，工作区会显示红色的“出错了”提示，内容为引擎或桥接返回的原因。会话目录 `Sessions\s-<时间>-<随机>\` 下有
+`serve.log`（桥接）、`session\m-<id>\adapter-runner.log`、`qemu.log`、`uart1.log`、`uart2.log`，可用于排错。
+小米手环 10 Pro 的固件串口日志在 `uart1.log`、`uart2.log`，`uart0.log` 通常为空。
+
+### 进程与清理
+
+`serve`、运行器和 QEMU 都在 App 创建的 Job Object 里运行，并设置了 `KILL_ON_JOB_CLOSE`。即使 App 崩溃或被任务管理器结束，
+系统也会结束整棵进程树，不会留下 `python.exe` 或 `qemu-system-arm.exe`。正常停止时，App 先通过控制协议发送 `stop`，
+由运行器回收 QEMU，再结束 `serve`。
+
+### 帧与日志（实现说明）
+
+- 帧文件 `session\frame.raw`：32 字节头（`Q66FRAME`、版本、序号、宽、高、行宽、格式）加小端 RGB565 像素。App 以
+  `FileShare.ReadWrite | FileShare.Delete` 打开文件，读完立即关闭，这样不会阻塞 Python 端用 `os.replace` 发布新帧。
+  App 按头部序号判断是否是新帧（偶数表示内容完整），不依赖文件修改时间。画面约 60 Hz 轮询，同一时刻最多只有一次读取。
+- `qemu.log`：Windows 上运行器会给 BEST1503 机型加 `quiet-panel-te-log=on`，不再为每个 60 Hz 面板 TE 信号写一行日志
+  （信号和中断本身不变）。实测开机阶段一次性写入约 1.9 MB，之后每分钟约 17 KiB（不加此选项时每分钟约 250 KB）。
+  因此 `result.json` 中的 `panel_te_edge_count` 在 Windows 上为 0。
+
+### M2 验收清单（x64 与 ARM64 实机各做一次）
+
+- [ ] 解压 `AzkiSimulator-full-win-<架构>`，运行 `AzkiSimulator.exe`，工作区没有“引擎缺失”提示
+- [ ] 选择 OTA 包后列出机型；多个机型时可以选择
+- [ ] 点“启动”后几秒内出现画面，之后显示表盘，画面持续刷新（状态行中的帧数和序号不断增加）
+- [ ] 点“停止”后状态回到“就绪”，任务管理器中没有残留的 `python.exe` / `qemu-system-arm.exe`
+- [ ] 运行中直接关闭窗口，同样没有残留进程
+- [ ] ARM64：记下表盘出现所需的时间和大致帧率，并与 x64 对比
 
 ## 引擎（M1）：命令行运行模拟器
 
@@ -170,7 +236,9 @@ cd C:\Azki\AzkiEngine-win-arm64
 
 `.github/workflows/windows-engine.yml` 在 `engine/`、`Sources/AzkiSimulator/Runtime/`、`tests/`、`windows/scripts/`、`windows/engine/` 变化时运行：
 用 MSYS2 编译 QEMU 与辅助工具，组装引擎包，运行 `selftest --require-graceful-stop` 和适用于 Windows 的上游 Python 单元测试，
-上传产物 `AzkiEngine-win-x64`、`AzkiEngine-win-arm64`。
+上传产物 `AzkiEngine-win-x64`、`AzkiEngine-win-arm64`；然后针对这个引擎包运行 Azki.Core 测试（含真实 `serve` 的
+TCP + token 控制连接、错误 token 被拒、Job Object 结束整棵进程树），发布 App，把引擎放进 `engine\`，冒烟启动后上传
+`AzkiSimulator-full-win-x64`、`AzkiSimulator-full-win-arm64`。该工作流在 `windows/src/`、`windows/tests/` 变化时也会运行。
 
 ## M0 验收清单（x64 与 ARM64 实机各做一次）
 
