@@ -330,7 +330,7 @@ public sealed class SessionController : IAsyncDisposable
 
     private static string? Describe(SessionStatus status)
     {
-        var parts = new[] { status.Error, status.FailureDetail, status.LastExit is { } code ? $"退出码 {code}" : null }
+        var parts = new[] { status.Error, status.FailureDetail, SessionStatus.DescribeExit(status.LastExit) is { } code ? $"退出码 {code}" : null }
             .Where(part => !string.IsNullOrEmpty(part)).ToArray();
         return parts.Length == 0 ? null : $"状态 {status.State}：" + string.Join("；", parts);
     }

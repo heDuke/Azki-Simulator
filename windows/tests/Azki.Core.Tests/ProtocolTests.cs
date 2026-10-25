@@ -104,6 +104,26 @@ public sealed class ProtocolTests
         Assert.Null(status.LastExit);
     }
 
+    [Theory]
+    [InlineData("3221225786", 3221225786L, "0xC000013A（Ctrl+Break/Ctrl+C 停止）")]
+    [InlineData("4294967295", 4294967295L, "0xFFFFFFFF")]
+    [InlineData("2", 2L, "2")]
+    [InlineData("-9", -9L, "信号 9")]
+    public void WindowsExitCodesAreNotSaturated(string json, long expected, string text)
+    {
+        // Python reports a Windows exit code as the unsigned DWORD; reading it as int showed 2147483647.
+        var status = SessionStatus.From(JsonNode.Parse("""{"state": "crashed", "lastExit": """ + json + "}"));
+        Assert.Equal(expected, status.LastExit);
+        Assert.Equal(text, SessionStatus.DescribeExit(status.LastExit));
+    }
+
+    [Fact]
+    public void NoExitCodeWhileTheRunnerHasNotExited()
+    {
+        Assert.Null(SessionStatus.DescribeExit(SessionStatus.From(JsonNode.Parse("""{"state": "running", "lastExit": null}""")).LastExit));
+        Assert.Null(SessionStatus.From(JsonNode.Parse("""{"state": "running"}""")).LastExit);
+    }
+
     [Fact]
     public async Task ClosedWithoutReplyIsDisconnected()
     {

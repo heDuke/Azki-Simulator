@@ -6,16 +6,31 @@ namespace Azki.Core.Session;
 
 /// <summary>The bridge's <c>status</c> reply (fields shared by every backend).</summary>
 public sealed record SessionStatus(string State, string? AdapterState, string? Error, string? FailureDetail,
-    int? LastExit, int? Pid, string? StopReason, JsonNode? Raw)
+    long? LastExit, int? Pid, string? StopReason, JsonNode? Raw)
 {
     public bool IsRunning => State is "running" or "starting";
+
+    /// <summary>
+    /// The runner's exit code for display, or null while it has not exited. Windows NTSTATUS-style
+    /// codes (0x80000000 and up) are shown in hex; negative values are POSIX signals.
+    /// </summary>
+    public static string? DescribeExit(long? code) => code switch
+    {
+        null => null,
+        < 0 => $"信号 {-code}",
+        0xC000013A => "0xC000013A（Ctrl+Break/Ctrl+C 停止）",
+        0xC0000005 => "0xC0000005（访问冲突）",
+        0xC0000409 => "0xC0000409（进程快速失败）",
+        >= 0x80000000 and <= 0xFFFFFFFF => $"0x{code:X8}",
+        _ => code.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    };
 
     public static SessionStatus From(JsonNode? node) => new(
         JsonText.String(node, "state") ?? "unknown",
         JsonText.String(node, "adapterState"),
         JsonText.String(node, "error"),
         JsonText.String(node, "failureDetail"),
-        JsonText.Int(node, "lastExit"),
+        JsonText.Long(node, "lastExit"),
         JsonText.Int(node, "pid"),
         JsonText.String(node, "stopReason"),
         node);

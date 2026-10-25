@@ -77,6 +77,17 @@ internal static class JsonText
         node is JsonObject obj && obj[key] is JsonValue value && value.GetValueKind() == JsonValueKind.Number
             && value.TryGetValue<double>(out var number) ? (int)number : null;
 
+    /// <summary>
+    /// A 64-bit integer, e.g. a Windows exit code: Python reports the unsigned DWORD
+    /// (0xC000013A = 3221225786), which <see cref="Int"/> would saturate to int.MaxValue.
+    /// </summary>
+    public static long? Long(JsonNode? node, string key) =>
+        node is JsonObject obj && obj[key] is JsonValue value && value.GetValueKind() == JsonValueKind.Number
+            ? value.TryGetValue<long>(out var whole) ? whole
+                : value.TryGetValue<double>(out var number) && double.IsFinite(number)
+                    && number >= long.MinValue && number <= long.MaxValue && number == Math.Floor(number) ? (long)number : null
+            : null;
+
     public static bool? Bool(JsonNode? node, string key) =>
         node is JsonObject obj && obj[key] is JsonValue value && value.TryGetValue<bool>(out var flag) ? flag : null;
 }
