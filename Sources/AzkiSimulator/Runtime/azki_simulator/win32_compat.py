@@ -450,7 +450,13 @@ class _DirEntry:
         self.path = entry.name if by_descriptor else entry.path
 
     def stat(self, *, follow_symlinks=True):
-        return _path_stat(self._entry.path, self._entry.stat(follow_symlinks=follow_symlinks))
+        result = self._entry.stat(follow_symlinks=follow_symlinks)
+        if not (result.st_nlink and result.st_ino and result.st_dev):
+            # Windows DirEntry.stat() comes from the directory listing and
+            # always reports st_nlink, st_ino and st_dev as 0; POSIX callers
+            # require st_nlink == 1 and compare (st_dev, st_ino). Ask the file.
+            result = _native["stat"](self._entry.path, follow_symlinks=follow_symlinks)
+        return _path_stat(self._entry.path, result)
 
     def is_dir(self, *, follow_symlinks=True):
         return self._entry.is_dir(follow_symlinks=follow_symlinks)
