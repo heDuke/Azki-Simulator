@@ -101,7 +101,7 @@ public sealed class EngineIntegrationTests
             if (OperatingSystem.IsWindows())
             {
                 // python + its child; the hidden console's conhost.exe may be in the job too (seen on arm64).
-                Assert.InRange(process.ActiveProcessCount, 2, 3);
+                Assert.InRange(process.ActiveProcessCount ?? 0, 2, 3);
             }
         }
         await Task.Delay(500, cancellation);
