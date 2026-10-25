@@ -170,7 +170,7 @@ cd C:\Azki\AzkiEngine-win-arm64
 
 `.github/workflows/windows-engine.yml` 在 `engine/`、`Sources/AzkiSimulator/Runtime/`、`tests/`、`windows/scripts/`、`windows/engine/` 变化时运行：
 用 MSYS2 编译 QEMU 与辅助工具，组装引擎包，运行 `selftest --require-graceful-stop` 和适用于 Windows 的上游 Python 单元测试，
-上传产物 `AzkiEngine-win-x64`、`AzkiEngine-win-arm64`（以及单独的 `qemu-win-*` 编译结果）。
+上传产物 `AzkiEngine-win-x64`、`AzkiEngine-win-arm64`。
 
 ## M0 验收清单（x64 与 ARM64 实机各做一次）
 
