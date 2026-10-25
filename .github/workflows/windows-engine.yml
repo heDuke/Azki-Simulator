@@ -1,0 +1,117 @@
+name: Windows engine (QEMU + Python runtime)
+
+# Windows port only: builds the custom QEMU with MSYS2, assembles the engine
+# bundle (QEMU + helpers + embeddable Python + runtime) and smoke-tests it on
+# x64 and ARM64. No firmware is downloaded, used or uploaded.
+on:
+  push:
+    branches: [windows-winui]
+    paths:
+      - 'engine/**'
+      - 'Sources/AzkiSimulator/Runtime/**'
+      - 'tests/**'
+      - 'windows/scripts/**'
+      - '.github/workflows/windows-engine.yml'
+  pull_request:
+    branches: [windows-winui]
+    paths:
+      - 'engine/**'
+      - 'Sources/AzkiSimulator/Runtime/**'
+      - 'tests/**'
+      - 'windows/scripts/**'
+      - '.github/workflows/windows-engine.yml'
+  workflow_dispatch:
+    inputs:
+      clean:
+        description: Build QEMU without the cached build tree
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: engine ${{ matrix.rid }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            arch: x64
+            runner: windows-latest
+            msystem: UCRT64
+          - rid: win-arm64
+            arch: arm64
+            runner: windows-11-arm
+            msystem: CLANGARM64
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up MSYS2 (${{ matrix.msystem }})
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: false
+          release: true
+          cache: true
+          pacboy: >-
+            cc:p glib2:p pixman:p dtc:p pkgconf:p meson:p ninja:p python:p zstd:p
+          install: >-
+            make diffutils tar xz curl ${{ matrix.arch == 'arm64' && 'binutils' || '' }}
+
+      - name: Toolchain versions
+        shell: msys2 {0}
+        run: |
+          uname -a
+          cc --version | head -1
+          meson --version
+          ninja --version
+          pkgconf --modversion glib-2.0
+
+      # The key pins the recipe and the MSYS2 toolchain; within it the newest
+      # QEMU build tree is reused and only changed overlay sources rebuild.
+      - name: Restore QEMU build tree
+        if: ${{ !inputs.clean }}
+        uses: actions/cache@v6
+        with:
+          path: build/windows-engine/work
+          key: qemu-${{ matrix.rid }}-${{ hashFiles('windows/scripts/build-qemu.sh') }}-${{ hashFiles('engine/qemu-overlay/**', 'engine/project/backend/src/*.c', 'engine/project/backend/src/*.h', 'engine/third-party/**') }}
+          restore-keys: qemu-${{ matrix.rid }}-${{ hashFiles('windows/scripts/build-qemu.sh') }}-
+
+      - name: Build QEMU and helpers
+        run: >-
+          ./windows/scripts/build-qemu.ps1 -Arch ${{ matrix.arch }}
+          -Msys2Root '${{ steps.msys2.outputs.msys2-location }}'
+
+      - name: QEMU smoke test (outside MSYS2)
+        run: |
+          $qemu = "build/windows-engine/qemu-win-${{ matrix.arch }}/qemu-system-arm.exe"
+          & $qemu --version
+          if ($LASTEXITCODE) { throw "qemu --version failed" }
+          $machines = & $qemu -machine help | Out-String
+          $machines
+          foreach ($m in 'best1503', 'azki-q65', 'azki-p65') {
+            if ($machines -notmatch "(?m)^$m\s") { throw "machine $m missing" }
+          }
+
+      - name: Upload QEMU build
+        uses: actions/upload-artifact@v7
+        with:
+          name: qemu-${{ matrix.rid }}
+          path: build/windows-engine/qemu-win-${{ matrix.arch }}
+          retention-days: 14
