@@ -3,8 +3,8 @@
 这是 Azki Simulator 的 Windows 原生桌面端移植（WinUI 3 + .NET 11），位于 `windows-winui` 分支。
 macOS 版（Swift，`Sources/AzkiSimulator`）不受影响；Python 运行时与 QEMU 引擎继续使用仓库原位置的代码。
 
-> 当前进度：**M0 分支与骨架**。程序只有一个带 Mica 背景和 NavigationView 的空壳窗口，还不能启动模拟器。
-> 引擎（M1）、画面显示（M2）等将在后续里程碑中实现。
+> 当前进度：**M1 引擎**。WinUI 窗口仍是 M0 的空壳；模拟器引擎（定制 QEMU + Python 运行时）已能在 Windows 上
+> 通过命令行运行（见下文“引擎（M1）”）。画面显示（M2）等将在后续里程碑中实现。
 
 ## 目录结构
 
@@ -19,7 +19,8 @@ windows/
 │   └── Azki.App/               WinUI 3 桌面程序（net11.0-windows10.0.26100.0，非打包）
 ├── tests/
 │   └── Azki.Core.Tests/        Azki.Core 单元测试（xUnit v3，Microsoft.Testing.Platform）
-└── scripts/                    Windows 引擎构建脚本（M1 起）
+├── engine/                     引擎命令行入口 azki-engine.cmd / azki-engine.py（打包进引擎包）
+└── scripts/                    引擎构建：build-qemu.ps1/.sh（MSYS2 编译 QEMU）、assemble-engine.ps1/.py（组装引擎包）
 ```
 
 ## 环境要求
@@ -84,6 +85,81 @@ x64 版本也能在 ARM64 设备上通过仿真运行，但请在 ARM64 设备�
 2. 工具栏平台选择 **x64** 或 **ARM64**（与本机一致），启动项目选 `Azki.App`，配置文件为 “Azki.App (Unpackaged)”。
 3. 按 F5 运行；“测试资源管理器”中可运行 `Azki.Core.Tests`。
 
+## 引擎（M1）：命令行运行模拟器
+
+引擎包 `AzkiEngine-win-x64` / `AzkiEngine-win-arm64` 包含：
+
+| 目录 | 内容 |
+| --- | --- |
+| `Engine\project\backend\build\` | `qemu-system-arm.exe`（QEMU 10.1.0 + `engine/qemu-overlay`，仅 arm-softmmu）、MSYS2 运行库 DLL、`yaffs-image.exe` / `legacy-ui-db.exe` / `instance-props.exe` |
+| `Engine\python\` | CPython 3.12.10 embeddable（标准库解压在 `Lib\`），`Lib\site-packages` 内含 pillow 12.3.0、littlefs-python 0.19.0、psutil 7.2.2 |
+| `Engine\manifest.json` | 引擎文件清单（每个文件的大小与 SHA-256），运行前校验 |
+| `Runtime\` | 与 macOS 共用的 Python 运行时（`azki-simulator.py` + `azki_simulator\`） |
+| `Firmware\catalog.json` | 只有硬件预设元数据，**不含任何固件** |
+| `azki-engine.cmd` | 命令行入口 |
+
+固件不在仓库和引擎包里，也不会被下载：请使用你自己的 OTA 固件包。
+
+### 获取引擎包
+
+方式一（推荐）：在 GitHub Actions 的 **Windows engine (QEMU + Python runtime)** 运行页面下载产物
+`AzkiEngine-win-x64` 或 `AzkiEngine-win-arm64`（与本机架构一致），解压到一个**只含 ASCII 字符、不含逗号**的路径，例如 `C:\Azki\AzkiEngine-win-arm64`。
+
+方式二：本机构建（需要 [MSYS2](https://www.msys2.org/)，默认装在 `C:\msys64`；x64 用 UCRT64，ARM64 用 CLANGARM64）：
+
+```powershell
+# 在仓库根目录；第一次加 -InstallDependencies 用 pacman 安装编译依赖
+pwsh windows\scripts\build-qemu.ps1 -Arch arm64 -InstallDependencies   # x64 机器写 -Arch x64
+pwsh windows\scripts\assemble-engine.ps1 -Arch arm64                    # 输出 build\windows-engine\AzkiEngine-win-arm64
+```
+
+### 自检（不需要固件）
+
+```powershell
+cd C:\Azki\AzkiEngine-win-arm64
+.\azki-engine.cmd selftest
+```
+
+输出 `"ok": true` 表示：引擎清单全部文件哈希正确、QEMU 含 `best1503` / `azki-q65` / `azki-p65` 机型、
+控制通道（127.0.0.1 动态端口 + 每会话随机 token）握手正常且拒绝无 token 的连接、Ctrl+Break 能正常停止服务、Job Object 进程组可整体结束。
+
+### 用自己的固件运行
+
+```powershell
+cd C:\Azki\AzkiEngine-win-arm64
+.\azki-engine.cmd run --firmware D:\Firmware\你的OTA包.zip
+# 一个 OTA 适用多个机型时会列出候选，按提示加 --model，例如：
+.\azki-engine.cmd run --firmware D:\Firmware\ota.zip --model miwear.watch.n66cn
+# 只跑 120 秒后自动停止：
+.\azki-engine.cmd run --firmware D:\Firmware\ota.zip --seconds 120
+```
+
+`run` 依次执行 `library-import` → `prepare-bundled` → `serve` → `start`，之后每 2 秒打印一次会话状态和 `frame.raw`（画面帧文件）是否在更新；按 **Ctrl+C** 停止。
+固件库默认在 `%LOCALAPPDATA%\AzkiSimulator\Library`，会话目录在 `%LOCALAPPDATA%\AzkiSimulator\Sessions\s-<时间>-<随机>\`（可用 `--library` / `--sessions` 修改，同样只用 ASCII 路径）。
+
+判断是否启动成功：状态行出现 `state=running adapter=running`，且 `frame.raw=... bytes, updated` 的时间不断变化。
+排错日志（都在会话目录下）：`serve.log`（桥接进程）、`session\m-<id>\adapter-runner.log`（运行器）、`session\m-<id>\stderr.log` / `qemu.log` / `uart0.log`（QEMU 与固件串口）。
+
+另开一个终端可以对运行中的会话发命令：
+
+```powershell
+.\azki-engine.cmd call "$env:LOCALAPPDATA\AzkiSimulator\Sessions\s-...\session" status
+.\azki-engine.cmd call "$env:LOCALAPPDATA\AzkiSimulator\Sessions\s-...\session" screenshot
+```
+
+### M1 已知限制
+
+- 没有 macOS 那样的文件系统沙箱：运行器与 QEMU 在一个“关闭即结束”的 Job Object 中运行，输入文件仍按计划固定，写入只发生在会话目录。
+- 虚拟蓝牙对端（virtual peer）依赖 macOS 加密库，Windows 上暂不可用；`run` 不创建实例数据盘（不传 `--instance-id`），因此不涉及它。
+- QMP 由 QEMU 监听 127.0.0.1 上预先选好的空闲端口（QMP 本身没有 token）；选端口与 QEMU 绑定之间有极短的竞争窗口。
+- 路径需为 ASCII（QEMU 通过 ANSI 代码页接收路径）。
+
+### M1 验收清单（x64 与 ARM64 实机各做一次）
+
+- [ ] `azki-engine.cmd selftest` 输出 `"ok": true`
+- [ ] `azki-engine.cmd run --firmware <你的固件>` 出现 `state=running`，`frame.raw` 持续更新
+- [ ] Ctrl+C 后显示 `stop:`，任务管理器中没有残留的 `qemu-system-arm.exe` / `python.exe`
+
 ## CI 产物
 
 `.github/workflows/windows-build.yml` 在推送到 `windows-winui` 分支（仅当 `windows/` 或该工作流变化）、向该分支提 PR、或手动触发时运行，
@@ -91,6 +167,10 @@ x64 版本也能在 ARM64 设备上通过仿真运行，但请在 ARM64 设备�
 产物 `AzkiSimulator-win-x64`、`AzkiSimulator-win-arm64` 可在 Actions 运行页面下载，解压后运行 `AzkiSimulator.exe`。
 
 产物未签名，首次运行时 SmartScreen 可能提示，选择“更多信息 → 仍要运行”即可。
+
+`.github/workflows/windows-engine.yml` 在 `engine/`、`Sources/AzkiSimulator/Runtime/`、`tests/`、`windows/scripts/`、`windows/engine/` 变化时运行：
+用 MSYS2 编译 QEMU 与辅助工具，组装引擎包，运行 `selftest --require-graceful-stop` 和适用于 Windows 的上游 Python 单元测试，
+上传产物 `AzkiEngine-win-x64`、`AzkiEngine-win-arm64`（以及单独的 `qemu-win-*` 编译结果）。
 
 ## M0 验收清单（x64 与 ARM64 实机各做一次）
 
