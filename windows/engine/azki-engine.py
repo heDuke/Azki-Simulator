@@ -215,7 +215,7 @@ def run(args):
         imported = simulator("library-import", "--engine-root", ENGINE, "--library-root", library,
                              "--input", firmware, *(["--model", args.model] if args.model else []))
         candidates = [item["id"] for item in imported.get("items", [])] or imported.get("candidateIDs", [])
-        print("Imported", imported["sha256"], "candidates:", ", ".join(candidates) or "-")
+        print("Imported", imported["sha256"], "candidates:", ", ".join(candidates) or "-", flush=True)
         if len(candidates) != 1:
             raise SystemExit("Choose the device with --model MODEL (or --profile-id ID): " + ", ".join(candidates))
         profile = candidates[0]
@@ -223,15 +223,18 @@ def run(args):
     prepared = simulator("prepare-bundled", "--engine-root", ENGINE, "--library-root", library,
                          "--profile-id", profile, "--session-root", root)
     session = root / "session"
-    print("Profile:", profile)
-    print("Session:", session)
+    print("Profile:", profile, flush=True)
+    print("Session:", session, flush=True)
     log_path = root / "serve.log"
     with open(log_path, "wb") as log:
         process = serve(session, log, "--approved-identity-sha256", prepared["identityDigest"])
         try:
             wait_endpoint(session, process)
             started = simulator("call", session, "start", check=False)
-            print("start:", json.dumps(started.get("result", started.get("error")), ensure_ascii=False))
+            print("start:", json.dumps(started.get("result", started.get("error")), ensure_ascii=False), flush=True)
+            if not started.get("ok"):
+                # Nothing is running; without this the status loop would poll forever.
+                raise SystemExit("start failed: " + str(started.get("error", {}).get("code")))
             deadline = time.monotonic() + args.seconds if args.seconds else None
             last = None
             while deadline is None or time.monotonic() < deadline:
