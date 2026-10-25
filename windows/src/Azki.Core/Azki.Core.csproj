@@ -10,6 +10,8 @@
     <RootNamespace>Azki.Core</RootNamespace>
     <AssemblyName>Azki.Core</AssemblyName>
     <IsAotCompatible>true</IsAotCompatible>
+    <!-- LibraryImport (Job Object P/Invoke) generates unsafe marshalling stubs. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
