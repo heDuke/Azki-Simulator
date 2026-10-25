@@ -1,3 +1,5 @@
+using Azki.App.ViewModels;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 
 namespace Azki.App;
@@ -17,8 +19,13 @@ public partial class App : Application
     /// <summary>The main window, once launched.</summary>
     public static Window? MainWindow { get; private set; }
 
+    /// <summary>The workspace (one simulator session); outlives page navigation.</summary>
+    public static WorkspaceViewModel Workspace { get; private set; } = null!;
+
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        // Before the window: its first page binds to the workspace.
+        Workspace = new WorkspaceViewModel(DispatcherQueue.GetForCurrentThread());
         _window = new MainWindow();
         MainWindow = _window;
         _window.Activate();
