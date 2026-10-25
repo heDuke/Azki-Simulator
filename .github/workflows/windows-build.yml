@@ -83,6 +83,13 @@ jobs:
         run: |
           $exe = Join-Path '${{ github.workspace }}' 'publish/AzkiSimulator-${{ matrix.rid }}/AzkiSimulator.exe'
           if (-not (Test-Path $exe)) { throw "missing $exe" }
+          # Verify the PE machine type matches the matrix architecture.
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $pe = [System.BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = '0x{0:X4}' -f [System.BitConverter]::ToUInt16($bytes, $pe + 4)
+          $expected = @{ 'win-x64' = '0x8664'; 'win-arm64' = '0xAA64' }['${{ matrix.rid }}']
+          Write-Host "PE machine: $machine (expected $expected)"
+          if ($machine -ne $expected) { throw "unexpected PE machine $machine" }
           $p = Start-Process -FilePath $exe -PassThru
           Start-Sleep -Seconds 15
           if ($p.HasExited) {

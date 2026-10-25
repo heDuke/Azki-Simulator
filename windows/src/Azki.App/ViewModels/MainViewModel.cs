@@ -28,7 +28,7 @@ public sealed class MainViewModel : ObservableObject
 
     public string OsVersionText => $"Windows {OsVersion}";
 
-    public string OsWarningTitle => "系统版本低于推荐版本";
+    public string OsWarningTitle { get; } = "系统版本低于推荐版本";
 
     public string OsWarningMessage { get; }
 
