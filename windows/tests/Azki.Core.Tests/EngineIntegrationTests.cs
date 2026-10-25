@@ -100,7 +100,8 @@ public sealed class EngineIntegrationTests
             Assert.True(IsAlive(grandchild));
             if (OperatingSystem.IsWindows())
             {
-                Assert.Equal(2, process.ActiveProcessCount);
+                // python + its child; the hidden console's conhost.exe may be in the job too (seen on arm64).
+                Assert.InRange(process.ActiveProcessCount, 2, 3);
             }
         }
         await Task.Delay(500, cancellation);
