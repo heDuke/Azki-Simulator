@@ -143,6 +143,98 @@ public sealed class ProtocolTests
         using var connection = SessionConnection.Open(directory.Path);
         var error = await Assert.ThrowsAsync<SimulatorException>(() => connection.SendAsync("status", cancellation: TestContext.Current.CancellationToken));
         Assert.Equal(SimulatorErrorKind.Disconnected, error.Kind);
+        Assert.Contains("未回复就关闭了连接", error.Message);
+        Assert.Contains("步骤「等待回复」", error.Message);
         await server;
+    }
+
+    private static string Endpoint(int port, string? token = null) =>
+        $$"""{"schema": "azki.endpoint.v1", "transport": "tcp", "host": "127.0.0.1", "port": {{port}}, "token": {{(token is null ? "null" : "\"" + token + "\"")}}, "pid": 1}""" + "\n";
+
+    [Fact]
+    public async Task AReplyTimeoutNamesTheCommandStepEndpointAndSeconds()
+    {
+        using var directory = new TemporaryDirectory();
+        File.WriteAllText(Path.Combine(directory.Path, "session.json"), ManifestJson());
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        File.WriteAllText(Path.Combine(directory.Path, "control.sock"), Endpoint(port, new string('b', 64)));
+        // Accepts and reads, never answers: a busy or stuck serve.
+        var server = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync(TestContext.Current.CancellationToken);
+            var buffer = new byte[4096];
+            while (await client.GetStream().ReadAsync(buffer, TestContext.Current.CancellationToken) > 0)
+            {
+            }
+        }, TestContext.Current.CancellationToken);
+        using var connection = SessionConnection.Open(directory.Path);
+        var error = await Assert.ThrowsAsync<SimulatorException>(() => connection.SendAsync("status",
+            timeout: TimeSpan.FromSeconds(1), cancellation: TestContext.Current.CancellationToken));
+        Assert.Equal(SimulatorErrorKind.Transport, error.Kind);
+        Assert.Contains("命令 status", error.Message);
+        Assert.Contains("步骤「等待回复」", error.Message);
+        Assert.Contains($"127.0.0.1:{port}", error.Message);
+        Assert.Contains("时限 1 秒", error.Message);
+        Assert.Contains("没有回复", error.Message);
+        listener.Stop();
+        await server;
+    }
+
+    [Fact]
+    public async Task ARefusedConnectionNamesTheTcpStep()
+    {
+        using var directory = new TemporaryDirectory();
+        File.WriteAllText(Path.Combine(directory.Path, "session.json"), ManifestJson());
+        int port;
+        using (var probe = new TcpListener(IPAddress.Loopback, 0))
+        {
+            probe.Start();
+            port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        }
+        File.WriteAllText(Path.Combine(directory.Path, "control.sock"), Endpoint(port));
+        using var connection = SessionConnection.Open(directory.Path);
+        var error = await Assert.ThrowsAsync<SimulatorException>(() => connection.SendAsync("start",
+            cancellation: TestContext.Current.CancellationToken));
+        Assert.Equal(SimulatorErrorKind.Disconnected, error.Kind);
+        Assert.Contains("命令 start", error.Message);
+        Assert.Contains("步骤「TCP 连接」", error.Message);
+        Assert.Contains("连接被拒绝", error.Message);
+    }
+
+    [Fact]
+    public async Task AMissingEndpointFileSaysSo()
+    {
+        using var directory = new TemporaryDirectory();
+        File.WriteAllText(Path.Combine(directory.Path, "session.json"), ManifestJson());
+        File.WriteAllText(Path.Combine(directory.Path, "control.sock"), Endpoint(9));
+        using var connection = SessionConnection.Open(directory.Path);
+        File.Delete(connection.ControlPath);
+        var error = await Assert.ThrowsAsync<SimulatorException>(() => connection.SendAsync("status",
+            cancellation: TestContext.Current.CancellationToken));
+        Assert.Contains("读取控制端点文件 control.sock", error.Message);
+        Assert.Contains("不存在", error.Message);
+    }
+
+    [Fact]
+    public void RemoteErrorsNameTheCommand()
+    {
+        var failure = BridgeResponse.Decode("""{"ok": false, "error": {"code": "timeout", "message": "Message deadline exceeded"}}"""u8);
+        var error = Assert.Throws<SimulatorException>(() => failure.CheckedResult("start"));
+        Assert.Equal("引擎拒绝了命令 start：Message deadline exceeded [timeout]", error.Message);
+    }
+
+    [Fact]
+    public void CrashDescriptionsExplainTheCode()
+    {
+        var status = SessionStatus.From(JsonNode.Parse(
+            """{"state": "crashed", "error": "host_error", "failureDetail": "timed out", "lastExit": 0}"""));
+        Assert.Equal("状态 crashed：host_error（运行器与 QEMU 的控制连接（QMP，127.0.0.1 回环端口）超时）；timed out；runner 退出码 0",
+            SessionController.Describe(status));
+        Assert.Contains("进程身份校验失败", SessionController.Describe(SessionStatus.From(JsonNode.Parse(
+            """{"state": "crashed", "error": "peer_identity"}""")))!);
+        Assert.Equal("状态 crashed：something_new", SessionController.Describe(SessionStatus.From(JsonNode.Parse(
+            """{"state": "crashed", "error": "something_new"}"""))));
     }
 }

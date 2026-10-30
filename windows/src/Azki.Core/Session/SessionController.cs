@@ -27,7 +27,9 @@ public sealed record SessionSnapshot(
     uint LastSequence,
     DateTime? StartedAt,
     string? Error,
-    string? SessionDirectory);
+    string? SessionDirectory,
+    PreparedSession? LastSession = null,
+    DateTime? FirstFrameAt = null);
 
 /// <summary>
 /// Single-session workflow behind the Workspace page: import an OTA, pick the device when it fits
@@ -56,6 +58,8 @@ public sealed class SessionController : IAsyncDisposable
     private long _frames;
     private DateTime? _startedAt;
     private SimulatorSession? _session;
+    private PreparedSession? _lastSession;
+    private DateTime? _firstFrameAt;
     private CancellationTokenSource? _loops;
     private Task _loopTask = Task.CompletedTask;
 
@@ -77,7 +81,7 @@ public sealed class SessionController : IAsyncDisposable
             {
                 return new SessionSnapshot(_phase, _firmwarePath, _candidates, _selected, _status,
                     _session?.Manifest.Geometry, _frames, _session?.Frames.LastSequence ?? 0, _startedAt, _error,
-                    _session?.Prepared.SessionDirectory);
+                    _session?.Prepared.SessionDirectory, _lastSession, _firstFrameAt);
             }
         }
     }
@@ -151,17 +155,23 @@ public sealed class SessionController : IAsyncDisposable
             _status = null;
             _frames = 0;
             _startedAt = null;
+            _firstFrameAt = null;
         });
         SimulatorSession? session = null;
+        var step = "准备会话（prepare-bundled）";
         try
         {
             var prepared = await _host.PrepareAsync(candidate.ProfileId, cancellation).ConfigureAwait(false);
+            Update(() => _lastSession = prepared);
+            step = "启动引擎 serve 并等待控制端点";
             session = await SimulatorSession.LaunchAsync(_host, prepared, cancellation: cancellation).ConfigureAwait(false);
             Update(() => _session = session);
+            step = "发送 start 命令";
             var status = await session.StartAsync(cancellation).ConfigureAwait(false);
             if (!status.IsRunning)
             {
-                throw new SimulatorException(SimulatorErrorKind.Remote, Describe(status) ?? "模拟器未能启动");
+                throw new SimulatorException(SimulatorErrorKind.Remote,
+                    "引擎接受了 start，但模拟器没有进入运行状态：" + (Describe(status) ?? status.State));
             }
             var loops = new CancellationTokenSource();
             Update(() =>
@@ -184,9 +194,17 @@ public sealed class SessionController : IAsyncDisposable
             {
                 _session = null;
                 _phase = SessionPhase.Ready;
-                _error = error.Message;
+                _error = $"启动失败（{step}）：{error.Message}";
             });
         }
+    }
+
+    /// <summary>Plain-text diagnostics for the clipboard: error, session folders and log tails.</summary>
+    public string DiagnosticsText()
+    {
+        SessionSnapshot snapshot = Snapshot;
+        return Diagnostics.SessionDiagnostics.Build(snapshot.Error, snapshot.Phase.ToString(), snapshot.LastSession,
+            snapshot.Status, _host.Bundle, _host.Locations.Root);
     }
 
     public async Task InputAsync(int x, int y, bool down)
@@ -202,7 +220,7 @@ public sealed class SessionController : IAsyncDisposable
         }
         catch (SimulatorException error)
         {
-            Update(() => _error = error.Message);
+            Update(() => _error = $"触摸输入（{x},{y} {(down ? "按下" : "抬起")}）失败：{error.Message}");
         }
     }
 
@@ -238,7 +256,7 @@ public sealed class SessionController : IAsyncDisposable
         }
         catch (SimulatorException failure)
         {
-            error = failure.Message;
+            error = "停止失败：" + failure.Message;
         }
         await session.DisposeAsync().ConfigureAwait(false);
         Finish(final, error);
@@ -269,12 +287,15 @@ public sealed class SessionController : IAsyncDisposable
             }
             catch (SimulatorException error)
             {
-                Update(() => _error = error.Message);
+                Update(() => _error = "读取画面 frame.raw 失败：" + error.Message);
                 continue;
             }
             if (result.Status == FrameReadStatus.New)
             {
-                Interlocked.Increment(ref _frames);
+                if (Interlocked.Increment(ref _frames) == 1)
+                {
+                    Update(() => _firstFrameAt = DateTime.Now);
+                }
                 FrameArrived?.Invoke(result.Frame!);
             }
         }
@@ -299,13 +320,17 @@ public sealed class SessionController : IAsyncDisposable
                 {
                     continue;
                 }
-                await EndAfterExitAsync(session, null, error.Message).ConfigureAwait(false);
+                var reason = session.ServeRunning
+                    ? $"连续 {failures} 次查询状态（status）失败，会话已结束。最后一次：{error.Message}"
+                    : $"引擎 serve 已退出（退出码 {SessionStatus.DescribeExit(session.ServeExitCode)}）。最后一次状态查询：{error.Message}"
+                        + $"。serve.log 末尾：{Diagnostics.LogTail.Brief(session.ServeLogPath, 4)}";
+                await EndAfterExitAsync(session, null, reason).ConfigureAwait(false);
                 return;
             }
             Update(() => _status = status);
             if (!status.IsRunning)
             {
-                await EndAfterExitAsync(session, status, Describe(status) ?? "模拟器已停止").ConfigureAwait(false);
+                await EndAfterExitAsync(session, status, "模拟器在运行中停止：" + (Describe(status) ?? status.State)).ConfigureAwait(false);
                 return;
             }
         }
@@ -328,9 +353,11 @@ public sealed class SessionController : IAsyncDisposable
         Finish(status, reason);
     }
 
-    private static string? Describe(SessionStatus status)
+    internal static string? Describe(SessionStatus status)
     {
-        var parts = new[] { status.Error, status.FailureDetail, SessionStatus.DescribeExit(status.LastExit) is { } code ? $"退出码 {code}" : null }
+        var error = status.Error ?? (status.State == "crashed" ? status.StopReason : null);
+        var explained = SessionStatus.Explain(error, status.FailureDetail) is { } hint ? $"{error}（{hint}）" : error;
+        var parts = new[] { explained, status.FailureDetail, SessionStatus.DescribeExit(status.LastExit) is { } code ? $"runner 退出码 {code}" : null }
             .Where(part => !string.IsNullOrEmpty(part)).ToArray();
         return parts.Length == 0 ? null : $"状态 {status.State}：" + string.Join("；", parts);
     }

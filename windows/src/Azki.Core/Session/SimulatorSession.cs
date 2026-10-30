@@ -25,6 +25,37 @@ public sealed record SessionStatus(string State, string? AdapterState, string? E
         _ => code.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
     };
 
+    /// <summary>A short Chinese explanation of a bridge/adapter error code (null when unknown).</summary>
+    public static string? Explain(string? code, string? detail = null) => code switch
+    {
+        null => null,
+        "host_error" when detail?.Contains("timed out", StringComparison.OrdinalIgnoreCase) == true
+            => "运行器与 QEMU 的控制连接（QMP，127.0.0.1 回环端口）超时",
+        "host_error" => "运行器与 QEMU 的控制连接（QMP）出错",
+        "core_exited" => "QEMU/运行器进程意外退出",
+        "missing_result" => "运行器退出时没有写出 result.json",
+        "invalid_result" => "运行器的 result.json 无法解析",
+        "output_limit" => "运行输出超过限额或检查失败",
+        "unsafe_output" => "运行目录出现不安全的文件",
+        "invalid_control" => "运行器的 control.json 未能完整发布",
+        "unsafe_control" => "运行器发布的控制端点不符合要求",
+        "peer_identity" => "进程身份校验失败（运行器/QEMU 不属于本会话的进程组，或端点对端 PID 不符）",
+        "identity_mismatch" => "运行器报告的身份与已批准的会话不符",
+        "supervisor_timeout" => "达到会话的最长运行时间",
+        "frame_copy_failed" or "frame_unavailable" or "invalid_frame" => "复制画面 frame.raw 失败",
+        "isolation_unavailable" => "本机缺少运行器启动器",
+        "cleanup_incomplete" or "native_cleanup_unconfirmed" => "进程组清理未确认",
+        "runner_io_error" => "监视运行器时文件读写出错",
+        "runner_internal_error" => "监视运行器时出现内部错误",
+        "input_timeout" => "触摸输入在时限内没有得到确认",
+        "guest_fault" => "固件触发了 CPU 异常",
+        _ => null,
+    };
+
+    /// <summary>A .NET process exit code as Python reports it (Windows: the unsigned DWORD).</summary>
+    public static long? ProcessExit(int? code) => code is not { } value ? null
+        : OperatingSystem.IsWindows() ? (uint)value : value;
+
     public static SessionStatus From(JsonNode? node) => new(
         JsonText.String(node, "state") ?? "unknown",
         JsonText.String(node, "adapterState"),
@@ -65,9 +96,19 @@ public sealed class SimulatorSession : IAsyncDisposable
     public string ServeLogPath => Path.Combine(Prepared.Root, "serve.log");
     public bool ServeRunning => !_serve.HasExited;
     public int ServeProcessId => _serve.Id;
+    public long? ServeExitCode => SessionStatus.ProcessExit(_serve.ExitCode);
     public int? ActiveProcessCount => _serve.ActiveProcessCount;
 
-    /// <summary>Starts <c>serve</c> and waits (up to <paramref name="endpointTimeout"/>, default 60 s) for its control endpoint.</summary>
+    /// <summary>How long serve may take to publish control.sock (cold start: Python, imports, Defender scans).</summary>
+    public static readonly TimeSpan DefaultEndpointTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>Reply deadline of <c>start</c>: launching the runner, not waiting for the guest UI.</summary>
+    public static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>Reply deadline of <c>stop</c>: the runner's bounded stop plus process-group cleanup.</summary>
+    public static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>Starts <c>serve</c> and waits (up to <paramref name="endpointTimeout"/>, default 120 s) for its control endpoint.</summary>
     public static async Task<SimulatorSession> LaunchAsync(RuntimeHost host, PreparedSession prepared,
         TimeSpan? endpointTimeout = null, CancellationToken cancellation = default)
     {
@@ -75,21 +116,34 @@ public sealed class SimulatorSession : IAsyncDisposable
         try
         {
             var control = Path.Combine(prepared.SessionDirectory, "control.sock");
-            var deadline = DateTime.UtcNow + (endpointTimeout ?? TimeSpan.FromSeconds(60));
+            var log = Path.Combine(prepared.Root, "serve.log");
+            var limit = endpointTimeout ?? DefaultEndpointTimeout;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             while (!File.Exists(control))  // also true for an AF_UNIX socket
             {
                 if (serve.HasExited)
                 {
                     throw new SimulatorException(SimulatorErrorKind.Engine,
-                        $"serve 提前退出（退出码 {serve.ExitCode}），见 {Path.Combine(prepared.Root, "serve.log")}");
+                        $"引擎 serve 启动后 {clock.Elapsed.TotalSeconds:0.0} 秒就退出了（退出码 {SessionStatus.DescribeExit(SessionStatus.ProcessExit(serve.ExitCode))}），"
+                        + $"未发布控制端点。serve.log 末尾：{Brief(log)}");
                 }
-                if (DateTime.UtcNow > deadline)
+                if (clock.Elapsed > limit)
                 {
-                    throw new SimulatorException(SimulatorErrorKind.Engine, "serve 未发布控制端点 control.sock");
+                    throw new SimulatorException(SimulatorErrorKind.Engine,
+                        $"等待引擎 serve 发布控制端点 control.sock 超时（已等待 {clock.Elapsed.TotalSeconds:0} 秒）。"
+                        + $"serve.log 末尾：{Brief(log)}");
                 }
                 await Task.Delay(100, cancellation).ConfigureAwait(false);
             }
-            var connection = SessionConnection.Open(prepared.SessionDirectory);
+            SessionConnection connection;
+            try
+            {
+                connection = SessionConnection.Open(prepared.SessionDirectory);
+            }
+            catch (SimulatorException error)
+            {
+                throw new SimulatorException(error.Kind, "读取会话描述 session.json 失败：" + error.Message, error.Code, error);
+            }
             return new SimulatorSession(prepared, serve, connection);
         }
         catch
@@ -99,14 +153,26 @@ public sealed class SimulatorSession : IAsyncDisposable
         }
     }
 
+    private static string Brief(string log)
+    {
+        var tail = Diagnostics.LogTail.Brief(log, 4);
+        return tail.Length == 0 ? "（空）" : tail;
+    }
+
+    /// <summary>
+    /// Reply deadline of <c>status</c>. The bridge answers serially and the adapter holds its lock while it
+    /// stops a failed runner (up to ~10 s), so this is longer than bridge.request's 10 s.
+    /// </summary>
+    public static readonly TimeSpan StatusTimeout = TimeSpan.FromSeconds(20);
+
     public async Task<SessionStatus> StatusAsync(CancellationToken cancellation = default) =>
-        SessionStatus.From(await Connection.CallAsync("status", cancellation: cancellation).ConfigureAwait(false));
+        SessionStatus.From(await Connection.CallAsync("status", timeout: StatusTimeout, cancellation: cancellation).ConfigureAwait(false));
 
     /// <summary>Starts the guest. The reply comes once the core is launched, long before the guest UI.</summary>
     public async Task<SessionStatus> StartAsync(CancellationToken cancellation = default)
     {
         Frames.Reset();
-        return SessionStatus.From(await Connection.CallAsync("start", timeout: TimeSpan.FromSeconds(60),
+        return SessionStatus.From(await Connection.CallAsync("start", timeout: StartTimeout,
             cancellation: cancellation).ConfigureAwait(false));
     }
 
@@ -116,7 +182,7 @@ public sealed class SimulatorSession : IAsyncDisposable
 
     /// <summary>Stops the guest through the bridge (the runner reaps QEMU and its process group).</summary>
     public async Task<SessionStatus> StopAsync(CancellationToken cancellation = default) =>
-        SessionStatus.From(await Connection.CallAsync("stop", timeout: TimeSpan.FromSeconds(45),
+        SessionStatus.From(await Connection.CallAsync("stop", timeout: StopTimeout,
             cancellation: cancellation).ConfigureAwait(false));
 
     /// <summary>

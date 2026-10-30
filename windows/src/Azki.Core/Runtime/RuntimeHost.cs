@@ -76,7 +76,11 @@ public sealed class RuntimeHost
         }
         catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
         {
-            throw new SimulatorException(SimulatorErrorKind.Engine, $"引擎命令 {arguments[0]} 超时（{timeout.TotalSeconds:0} 秒）");
+            string partial;
+            lock (errors) { partial = errors.ToString(); }
+            throw new SimulatorException(SimulatorErrorKind.Engine,
+                $"{Step(arguments[0])}超时：引擎命令 {arguments[0]} 在 {timeout.TotalMinutes:0.#} 分钟内没有完成"
+                + (partial.Trim().Length == 0 ? "（没有输出）" : "；最后输出：" + Tail(partial)));
         }
         // Process.WaitForExitAsync also waits for the redirected streams to drain.
         var text = process.StandardOutput.Trim();
@@ -93,19 +97,20 @@ public sealed class RuntimeHost
             string tail;
             lock (errors) { tail = errors.ToString(); }
             throw new SimulatorException(SimulatorErrorKind.Engine,
-                $"引擎命令 {arguments[0]} 失败（退出码 {exit}）：{Tail(text + "\n" + tail)}");
+                $"{Step(arguments[0])}失败：引擎命令 {arguments[0]} 退出码 {exit}，输出：{Tail(text + "\n" + tail)}");
         }
         if (JsonText.Bool(result, "ok") == false)
         {
             var error = result["error"];
             throw new SimulatorException(SimulatorErrorKind.Engine,
-                JsonText.String(error, "message") ?? $"引擎命令 {arguments[0]} 失败", JsonText.String(error, "code"));
+                $"{Step(arguments[0])}失败：" + (JsonText.String(error, "message") ?? $"引擎命令 {arguments[0]} 失败")
+                + (JsonText.String(error, "code") is { } code ? $" [{code}]" : ""), JsonText.String(error, "code"));
         }
         return result;
     }
 
     public async Task<JsonObject> CatalogAsync(CancellationToken cancellation = default) =>
-        await RunJsonAsync(TimeSpan.FromMinutes(2), cancellation, "library-catalog",
+        await RunJsonAsync(CatalogTimeout, cancellation, "library-catalog",
             "--engine-root", Bundle.EngineRoot, "--library-root", Locations.Library).ConfigureAwait(false);
 
     /// <summary>Imports an OTA zip (or firmware file) into the library; idempotent for the same file.</summary>
@@ -118,7 +123,7 @@ public sealed class RuntimeHost
             arguments.AddRange(["--model", model]);
         }
         Locations.Ensure();
-        var result = await RunJsonAsync(TimeSpan.FromMinutes(10), cancellation, [.. arguments]).ConfigureAwait(false);
+        var result = await RunJsonAsync(ImportTimeout, cancellation, [.. arguments]).ConfigureAwait(false);
         var candidates = (result["items"] as JsonArray ?? []).OfType<JsonNode>().Select(FirmwareCandidate.From).ToList();
         return new ImportResult(JsonText.String(result, "sha256") ?? "", candidates,
             JsonText.Bool(result, "needsSelection") ?? candidates.Count > 1);
@@ -134,7 +139,7 @@ public sealed class RuntimeHost
         {
             throw new SimulatorException(SimulatorErrorKind.Engine, "会话路径必须是不含逗号的 ASCII 路径：" + root);
         }
-        var result = await RunJsonAsync(TimeSpan.FromMinutes(5), cancellation, "prepare-bundled",
+        var result = await RunJsonAsync(PrepareTimeout, cancellation, "prepare-bundled",
             "--engine-root", Bundle.EngineRoot, "--library-root", Locations.Library,
             "--profile-id", profileId, "--session-root", root).ConfigureAwait(false);
         var digest = JsonText.String(result, "identityDigest")
@@ -169,6 +174,20 @@ public sealed class RuntimeHost
             throw;
         }
     }
+
+    /// <summary>Generous: a first import or session preparation on a cold Windows machine can take minutes.</summary>
+    public static readonly TimeSpan CatalogTimeout = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan ImportTimeout = TimeSpan.FromMinutes(30);
+    public static readonly TimeSpan PrepareTimeout = TimeSpan.FromMinutes(30);
+
+    private static string Step(string command) => command switch
+    {
+        "library-import" => "导入固件",
+        "prepare-bundled" => "准备会话（首次运行会生成存储镜像）",
+        "library-catalog" => "读取固件库",
+        "prepare" => "创建会话",
+        _ => $"引擎命令 {command} ",
+    };
 
     private static string Tail(string text)
     {

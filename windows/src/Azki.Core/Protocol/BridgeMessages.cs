@@ -57,12 +57,13 @@ public sealed record BridgeResponse(bool Ok, JsonNode? Result, string? ErrorCode
     }
 
     /// <summary>The result, or a <see cref="SimulatorException"/> carrying the bridge's code and message.</summary>
-    public JsonNode? CheckedResult()
+    public JsonNode? CheckedResult(string? command = null)
     {
         if (!Ok)
         {
+            var prefix = command is null ? "引擎拒绝了请求" : $"引擎拒绝了命令 {command}";
             throw new SimulatorException(SimulatorErrorKind.Remote,
-                ErrorMessage is null ? "本机桥接拒绝了请求" : $"{ErrorMessage} [{ErrorCode}]", ErrorCode);
+                ErrorMessage is null ? $"{prefix} [{ErrorCode}]" : $"{prefix}：{ErrorMessage} [{ErrorCode}]", ErrorCode);
         }
         return Result;
     }
