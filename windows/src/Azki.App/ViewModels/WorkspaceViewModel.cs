@@ -75,6 +75,15 @@ public sealed class WorkspaceViewModel : ObservableObject
     public string? ErrorText => _snapshot?.Error;
     public bool HasError => !string.IsNullOrEmpty(ErrorText);
 
+    /// <summary>The current or last session's root folder (serve.log, session\m-*\qemu.log …).</summary>
+    public string? SessionFolder => _snapshot?.LastSession?.Root;
+    public bool HasSessionFolder => !string.IsNullOrEmpty(SessionFolder);
+    public string SessionFolderText => SessionFolder is { } folder ? "会话目录：" + folder : "";
+
+    /// <summary>Error, session folders and log tails as text (reads files: call off the UI thread).</summary>
+    public string DiagnosticsText() => Controller?.DiagnosticsText()
+        ?? "Azki Simulator 诊断信息\n" + EngineMissingMessage;
+
     public DisplayGeometry? Geometry => _snapshot?.Geometry ?? (SelectedCandidate is { Width: > 0 } c
         ? DisplayGeometry.Find(c.Width, c.Height) : null);
 
@@ -107,8 +116,10 @@ public sealed class WorkspaceViewModel : ObservableObject
         var elapsed = snapshot.StartedAt is { } started ? DateTime.Now - started : TimeSpan.Zero;
         var status = snapshot.Status;
         var frames = snapshot.FrameCount == 0
-            ? "等待第一帧（固件开机可能需要 1 分钟以上）"
-            : $"已收到 {snapshot.FrameCount} 帧（序号 {snapshot.LastSequence}）";
+            ? $"等待第一帧（已 {elapsed.TotalSeconds:0} 秒；固件开机可能需要 1 分钟以上，不会因此超时）"
+            : $"已收到 {snapshot.FrameCount} 帧（序号 {snapshot.LastSequence}"
+                + (snapshot.FirstFrameAt is { } first && snapshot.StartedAt is { } begin
+                    ? $"，第一帧在启动后 {(first - begin).TotalSeconds:0.0} 秒）" : "）");
         return $"运行中 {elapsed:mm\\:ss} · 状态 {status?.State}/{status?.AdapterState} · {snapshot.Geometry} · {frames}";
     }
 

@@ -70,7 +70,21 @@
             IsClosable="False"
             Title="出错了"
             Message="{x:Bind ViewModel.ErrorText, Mode=OneWay}"
-            IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}" />
+            IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}">
+          <InfoBar.ActionButton>
+            <Button Content="复制诊断信息" Click="OnCopyDiagnostics" ToolTipService.ToolTip="复制错误、会话目录和 serve.log / qemu.log 等日志的末尾，可直接粘贴发送" />
+          </InfoBar.ActionButton>
+        </InfoBar>
+
+        <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.HasSessionFolder, Mode=OneWay}">
+          <HyperlinkButton Padding="0" Click="OnOpenSessionFolder" ToolTipService.ToolTip="在资源管理器中打开">
+            <TextBlock Text="{x:Bind ViewModel.SessionFolderText, Mode=OneWay}" TextWrapping="Wrap" />
+          </HyperlinkButton>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="复制诊断信息" Click="OnCopyDiagnostics" />
+            <TextBlock x:Name="CopyFeedback" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" />
+          </StackPanel>
+        </StackPanel>
 
         <TextBlock
             Text="{x:Bind ViewModel.EngineText}"

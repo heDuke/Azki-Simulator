@@ -71,6 +71,43 @@ public sealed partial class WorkspacePage : Page
         }
     }
 
+    private async void OnCopyDiagnostics(object sender, RoutedEventArgs e)
+    {
+        string text;
+        try
+        {
+            text = await Task.Run(ViewModel.DiagnosticsText);
+        }
+        catch (Exception error)
+        {
+            text = "诊断信息生成失败：" + error;
+        }
+        var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+        package.SetText(text);
+        try
+        {
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
+            Windows.ApplicationModel.DataTransfer.Clipboard.Flush();
+            CopyFeedback.Text = $"已复制 {text.Length} 个字符，可直接粘贴";
+        }
+        catch (Exception error)
+        {
+            CopyFeedback.Text = "复制到剪贴板失败：" + error.Message;
+        }
+    }
+
+    private void OnOpenSessionFolder(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SessionFolder is not { } folder || !System.IO.Directory.Exists(folder))
+        {
+            CopyFeedback.Text = "会话目录不存在：" + ViewModel.SessionFolder;
+            return;
+        }
+        var explorer = new System.Diagnostics.ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+        explorer.ArgumentList.Add(folder);
+        System.Diagnostics.Process.Start(explorer)?.Dispose();
+    }
+
     private async void OnStart(object sender, RoutedEventArgs e)
     {
         _bitmap = null;
