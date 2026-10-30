@@ -31,6 +31,8 @@ from .instance_data import (validate_instance_images, instance_machine_options, 
 
 
 QMP_START_SECONDS = 60
+# Windows only: per-request QMP reply deadline once connected (POSIX keeps 2 s).
+QMP_WINDOWS_TIMEOUT = 15
 # Seconds after the control socket opens before host battery/charger state is
 # applied; the guest must already be past its power-on charger check.
 RUNTIME_SETTINGS_DELAY = 8
@@ -749,16 +751,26 @@ def main():
                             raise RuntimeError('QEMU control socket did not start')
                         time.sleep(.02)
                     if sys.platform == 'win32':
-                        # The endpoint file exists before QEMU listens.
+                        # The endpoint file exists before QEMU listens. QEMU
+                        # accepts on its QMP port while it is still initialising
+                        # the machine; the greeting follows once its main loop
+                        # runs, which on a cold Windows start (first launch,
+                        # Defender scanning the core and firmware) can take
+                        # well over QMP's usual 2 s. Wait up to the start window.
                         while connection is None:
+                            remaining = QMP_START_SECONDS - (time.monotonic() - started)
                             try:
-                                connection = QMP(qmp_path)
+                                connection = QMP(qmp_path, timeout=max(2, remaining))
                             except (ConnectionRefusedError, ConnectionResetError):
                                 if proc.poll() is not None:
                                     raise RuntimeError('QEMU exited before its control socket started')
                                 if time.monotonic() - started > QMP_START_SECONDS:
                                     raise RuntimeError('QEMU control socket did not start')
                                 time.sleep(.05)
+                            except TimeoutError:
+                                raise RuntimeError('QEMU QMP greeting timed out after %.0f s' % (time.monotonic() - started))
+                        # A busy Windows host can stall one QMP reply for more than 2 s.
+                        connection.socket.settimeout(QMP_WINDOWS_TIMEOUT)
                     else:
                         connection = QMP(qmp_path)
                     control = WatchControl(connection, temporary,
