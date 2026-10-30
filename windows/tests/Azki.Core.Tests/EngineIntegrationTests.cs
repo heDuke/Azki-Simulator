@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
+using Azki.Core.Frame;
 using Azki.Core.Runtime;
 using Azki.Core.Session;
 using Azki.Core.Storage;
@@ -106,6 +107,116 @@ public sealed class EngineIntegrationTests
         }
         await Task.Delay(500, cancellation);
         Assert.False(IsAlive(grandchild), "grandchild survived its supervisor");
+    }
+
+    /// <summary>
+    /// The whole Windows run path without firmware: real serve (TCP + token), the minative bridge with
+    /// minative_launch.py and its Job Object, fake_minative's runner/core standing in for
+    /// multi_device.py/QEMU (control.json, process identity, input endpoint, lcd-frame.raw), frames
+    /// through FrameReader, input, status latency while frames are mirrored, stop and cleanup.
+    /// </summary>
+    [Fact]
+    public async Task FakeRunnerRunsThroughTheRealServePath()
+    {
+        var bundle = RequireBundle();
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The developer launch policy without a sandbox is Windows-only");
+        var cancellation = TestContext.Current.CancellationToken;
+        var output = TestContext.Current.TestOutputHelper;
+        using var work = new TemporaryDirectory();
+        var script = FindRepositoryFile("windows/scripts/fake_minative.py");
+        var host = new RuntimeHost(bundle, new DataLocations(Path.Combine(work.Path, "data")));
+        var info = new ProcessStartInfo(bundle.Python);
+        foreach (var argument in new[] { "-I", "-S", "-B", "-X", "utf8", script, bundle.RuntimeRoot, work.Path })
+        {
+            info.ArgumentList.Add(argument);
+        }
+        string stdout;
+        using (var prepare = JobObjectLauncher.Start(info, line => output?.WriteLine("prepare: " + line)))
+        {
+            Assert.Equal(0, await prepare.WaitForExitAsync(cancellation));
+            stdout = prepare.StandardOutput;
+        }
+        var prepared = System.Text.Json.Nodes.JsonNode.Parse(stdout)!;
+        var sessionDirectory = (string)prepared["directory"]!;
+        var session = await SimulatorSession.LaunchAsync(host,
+            new PreparedSession(work.Path, sessionDirectory, "fake.p67", (string)prepared["identityDigest"]!),
+            cancellation: cancellation);
+        int servePid;
+        string? run;
+        await using (session)
+        {
+            servePid = session.ServeProcessId;
+            var clock = Stopwatch.StartNew();
+            var started = await session.StartAsync(cancellation);
+            Assert.True(started.IsRunning, started.Raw?.ToJsonString());
+            output?.WriteLine($"start replied after {clock.Elapsed.TotalSeconds:0.00} s");
+
+            SimulatorFrame? frame = null;
+            while (frame is null && clock.Elapsed < TimeSpan.FromSeconds(60))
+            {
+                var read = session.Frames.Read();
+                frame = read.Status == FrameReadStatus.New ? read.Frame : null;
+                if (frame is null)
+                {
+                    await Task.Delay(50, cancellation);
+                }
+            }
+            Assert.NotNull(frame);
+            output?.WriteLine($"first frame after {clock.Elapsed.TotalSeconds:0.00} s (sequence {frame!.Sequence})");
+            Assert.Equal((336, 480), (frame.Width, frame.Height));
+            Assert.Equal(Rgb565.Pixel(0x07E0), BitConverter.ToUInt32(frame.Bgra, 0));
+
+            var latencies = new List<double>();
+            int frames = 0;
+            var window = Stopwatch.StartNew();
+            while (window.Elapsed < TimeSpan.FromSeconds(4))
+            {
+                var probe = Stopwatch.StartNew();
+                var status = await session.StatusAsync(cancellation);
+                latencies.Add(probe.Elapsed.TotalMilliseconds);
+                Assert.Equal("running", status.State);
+                for (int i = 0; i < 6; i++)
+                {
+                    frames += session.Frames.Read().Status == FrameReadStatus.New ? 1 : 0;
+                    await Task.Delay(16, cancellation);
+                }
+            }
+            output?.WriteLine($"status latency max {latencies.Max():0} ms, median {latencies.Order().ElementAt(latencies.Count / 2):0} ms; {frames} new frames in 4 s");
+            Assert.True(latencies.Max() < 2000, $"status took {latencies.Max():0} ms while frames were mirrored");
+            Assert.True(frames >= 20, $"only {frames} new frames in 4 s");
+
+            await session.InputAsync(10, 20, true, cancellation);
+            await session.InputAsync(10, 20, false, cancellation);
+            run = Diagnostics.SessionDiagnostics.LatestRun(sessionDirectory);
+            Assert.NotNull(run);
+            Assert.Equal(2, File.ReadAllLines(Path.Combine(run!, "fake-input.log")).Length);
+
+            var stopped = await session.StopAsync(cancellation);
+            Assert.Equal("stopped", stopped.State);
+            Assert.Equal("stopped", stopped.StopReason);
+            Assert.Equal("reaped", Protocol.JsonText.String(stopped.Raw, "cleanup"));
+        }
+        Assert.False(IsAlive(servePid), "serve survived the session");
+        var runner = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(run!, "runner-process.json")))!;
+        Assert.False(IsAlive((int)runner["pid"]!), "the runner survived");
+        Assert.False(IsAlive((int)runner["supervisorPID"]!), "the supervisor survived");
+        var report = Diagnostics.SessionDiagnostics.Build(null, "Ready",
+            new PreparedSession(work.Path, sessionDirectory, "fake.p67", null), null, bundle, null);
+        Assert.Contains("fake core: frame", report);  // qemu.log tail
+        Assert.Contains("fake runner: control published", report);  // adapter-runner.log tail
+    }
+
+    private static string FindRepositoryFile(string relative)
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            var candidate = Path.Combine(directory.FullName, relative);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+        throw new FileNotFoundException("Not found above the test directory", relative);
     }
 
     private static bool IsAlive(int pid)

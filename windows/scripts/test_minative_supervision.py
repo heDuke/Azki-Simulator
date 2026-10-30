@@ -210,10 +210,19 @@ class BridgeSupervisionTests(unittest.TestCase):
             # The bridge answers each request on its main thread while the frame
             # worker mirrors at 60 Hz; both share the adapter lock.
             costs = []
+            import cProfile
+            import io
+            import pstats
+            profile = cProfile.Profile()
             for _ in range(20):
                 begin = time.perf_counter()
+                profile.enable()
                 adapter.read_frame()
+                profile.disable()
                 costs.append(time.perf_counter() - begin)
+            listing = io.StringIO()
+            pstats.Stats(profile, stream=listing).sort_stats("cumulative").print_stats(18)
+            print("read_frame profile (20 calls):\n" + listing.getvalue()[-4000:])
             latencies = []
             end = time.monotonic() + 3
             while time.monotonic() < end:
