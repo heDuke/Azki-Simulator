@@ -217,7 +217,18 @@ class BridgeSupervisionTests(unittest.TestCase):
             for _ in range(20):
                 begin = time.perf_counter()
                 profile.enable()
-                adapter.read_frame()
+                # The fake core flips sequence odd while writing; retry the same
+                # way a live client would instead of failing the whole profile.
+                for _attempt in range(50):
+                    try:
+                        adapter.read_frame()
+                        break
+                    except minative.MError as error:
+                        if error.code != "frame_unavailable":
+                            raise
+                        time.sleep(.005)
+                else:
+                    self.fail("read_frame stayed frame_unavailable")
                 profile.disable()
                 costs.append(time.perf_counter() - begin)
             listing = io.StringIO()

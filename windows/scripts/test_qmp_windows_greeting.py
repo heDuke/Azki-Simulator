@@ -57,8 +57,28 @@ def _runner_qmp_lambda(tree: ast.AST) -> ast.Lambda:
     return found
 
 
+def _ensure_win32_compat():
+    """Register win32_compat as a top-level module the way minative_launch does.
+
+    qmp.QMP and runner do ``import win32_compat`` (not azki_simulator.win32_compat).
+    """
+    if sys.platform != "win32":
+        return None
+    if "win32_compat" in sys.modules:
+        return sys.modules["win32_compat"]
+    import importlib.util
+    path = RUNTIME / "azki_simulator" / "win32_compat.py"
+    spec = importlib.util.spec_from_file_location("win32_compat", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["win32_compat"] = module
+    spec.loader.exec_module(module)
+    module.install()
+    return module
+
+
 def _install_production_wrapper():
     """Install the same runner.QMP lambda multi_device.main installs."""
+    _ensure_win32_compat()
     sys.path.insert(0, str(BACKEND))
     from src.qmp import QMP
     from src import runner
@@ -123,10 +143,7 @@ class MultiDeviceQmpWrapperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "qmp.sock"
             if sys.platform == "win32":
-                sys.path.insert(0, str(RUNTIME))
-                from azki_simulator import win32_compat
-
-                win32_compat.install()
+                win32_compat = _ensure_win32_compat()
                 server = win32_compat.listen(path, token=False)
 
                 def accept():
