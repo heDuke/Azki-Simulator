@@ -312,7 +312,11 @@ def main():
     sys.path.insert(0,str(BACKEND))
     from src.qmp import QMP
     from src import runner
-    runner.QMP=lambda path:QMP(path,timeout=2)
+    # Forward timeout= so the Windows greeting wait in runner.main can use
+    # the remaining QMP_START_SECONDS window (QMP defaults to 2 s). A
+    # path-only lambda raised TypeError and the runner exited 1 with no
+    # result.json (missing_result).
+    runner.QMP=lambda path, timeout=2: QMP(path, timeout=timeout)
     if profile['model'] == 'miwear.watch.p65':
         from firmware_resources import checked_member
         package = Path(profile['ota_path']).read_bytes()

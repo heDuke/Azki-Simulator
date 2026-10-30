@@ -757,6 +757,8 @@ def main():
                         # runs, which on a cold Windows start (first launch,
                         # Defender scanning the core and firmware) can take
                         # well over QMP's usual 2 s. Wait up to the start window.
+                        # multi_device installs runner.QMP as a lambda that MUST
+                        # forward timeout= (a path-only lambda raised TypeError).
                         while connection is None:
                             remaining = QMP_START_SECONDS - (time.monotonic() - started)
                             try:
