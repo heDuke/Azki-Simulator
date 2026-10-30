@@ -10,8 +10,17 @@ On Windows, os.DirEntry.stat() reports st_nlink == 0 (and st_ino/st_dev 0);
 _check_outputs needs st_nlink == 1, so before win32_compat asked the file
 itself every real run failed at once with "output_limit".
 
-Run by run-windows-tests.py (Windows CI); it also passes on Linux/macOS.
+BridgeSupervisionTests goes further down the real path with fake_minative's
+runner: the MinativeSessionBridge start (on Windows through the real
+minative_launch.py supervisor and its Job Object), control.json/identity
+checks with the runner/core process identity, the input endpoint with its
+token and peer check, the frame mirror into frame.raw, status latency while
+frames are mirrored, and the stop.
+
+Run by run-windows-tests.py (Windows CI); it also passes on Linux.
 """
+import contextlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -21,6 +30,7 @@ import struct
 import sys
 import tempfile
 import time
+import threading
 import unittest
 from unittest import mock
 
@@ -30,6 +40,8 @@ if sys.platform == "win32":
     from azki_simulator import win32_compat
     win32_compat.install()
 from azki_simulator import minative  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fake_minative  # noqa: E402
 
 WIDTH, HEIGHT = 192, 490
 
@@ -130,6 +142,105 @@ class SupervisionTests(unittest.TestCase):
         self.assertEqual(status["cleanup"], "reaped", status)
         if sys.platform == "win32":
             self.assertEqual(win32_compat.group_members(adapter.process.pid), [])
+
+
+class BridgeSupervisionTests(unittest.TestCase):
+    def setUp(self):
+        self.work = Path(os.path.realpath(tempfile.mkdtemp(prefix="azki-bridge-")))
+        os.chmod(self.work, 0o700)
+        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
+
+    def launch_policy(self):
+        """Windows: the production launch (minative_launch.py in a Job Object).
+        Elsewhere the developer sandbox is macOS-only, so the runner starts directly."""
+        if sys.platform == "win32":
+            return contextlib.nullcontext()
+        start = minative.MinativeAdapter.start
+
+        def direct(adapter):
+            adapter.execution_prefix, adapter.fixture_only = (), True
+            return start(adapter)
+        from azki_simulator import minative_isolation
+        patches = [mock.patch.object(minative_isolation, "execution_prefix", lambda adapter: ()),
+                   mock.patch.object(minative.MinativeAdapter, "start", direct)]
+
+        class Both:
+            def __enter__(self):
+                for item in patches:
+                    item.start()
+
+            def __exit__(self, *_):
+                for item in patches:
+                    item.stop()
+        return Both()
+
+    def test_bridge_runs_the_fake_runner_end_to_end(self):
+        from azki_simulator.minative_bridge import MinativeSessionBridge
+        prepared = fake_minative.prepare(RUNTIME, self.work)
+        directory = Path(prepared["directory"])
+        bridge = MinativeSessionBridge(directory, prepared["identityDigest"])
+        with self.launch_policy():
+            started = time.monotonic()
+            status = bridge.start()
+        try:
+            self.assertEqual(status["state"], "running", status)
+            deadline = time.monotonic() + 60
+            while bridge.adapter.status()["state"] != "running" and time.monotonic() < deadline:
+                self.assertIsNone(bridge.adapter.status()["reason"], bridge.adapter.status())
+                time.sleep(.05)
+            adapter = bridge.adapter
+            self.assertEqual(adapter.status()["state"], "running", adapter.status())
+            print("\ncontrol.json accepted after %.2f s" % (time.monotonic() - started))
+            if sys.platform == "win32":
+                identity = adapter._developer_process_identity
+                self.assertEqual(identity["runnerPID"], adapter._runner_pid())
+                self.assertIn(identity["corePID"], win32_compat.group_members(adapter.process.pid))
+
+            frame = directory / "frame.raw"
+            deadline = time.monotonic() + 30
+            while not frame.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            with open(frame, "rb") as stream:
+                data = stream.read()
+            magic, version, sequence, width, height, stride, fmt = struct.unpack("<8s6I", data[:32])
+            self.assertEqual((magic, width, height, stride, fmt), (b"Q66FRAME", WIDTH_P67, HEIGHT_P67, WIDTH_P67 * 2, 1))
+            self.assertEqual(sequence % 2, 0)
+            self.assertEqual(data[32:34], struct.pack("<H", fake_minative.PIXEL))
+
+            # The bridge answers each request on its main thread while the frame
+            # worker mirrors at 60 Hz; both share the adapter lock.
+            costs = []
+            for _ in range(20):
+                begin = time.perf_counter()
+                adapter.read_frame()
+                costs.append(time.perf_counter() - begin)
+            latencies = []
+            end = time.monotonic() + 3
+            while time.monotonic() < end:
+                begin = time.perf_counter()
+                bridge.status()
+                latencies.append(time.perf_counter() - begin)
+                time.sleep(.1)
+            metrics = dict(bridge._frame_metrics)
+            print("read_frame median %.1f ms, max %.1f ms; status latency max %.1f ms; frame metrics %s" % (
+                sorted(costs)[len(costs) // 2] * 1e3, max(costs) * 1e3, max(latencies) * 1e3, metrics))
+            self.assertLess(max(latencies), 1.0, "status starved while frames were mirrored")
+            self.assertGreater(metrics["published"], 10)
+
+            self.assertEqual(bridge.input({"x": 10, "y": 20, "down": True})["accepted"], True)
+            self.assertEqual(bridge.input({"x": 10, "y": 20, "down": False})["accepted"], True)
+            events = (adapter.run / "fake-input.log").read_text().splitlines()
+            self.assertEqual([json.loads(line)["down"] for line in events], [True, False])
+        finally:
+            stopped = bridge.stop()
+        self.assertEqual(stopped["state"], "stopped", stopped)
+        self.assertEqual(stopped["stopReason"], "stopped", stopped)
+        self.assertEqual(stopped["cleanup"], "reaped", stopped)
+        if sys.platform == "win32":
+            self.assertEqual(win32_compat.group_members(bridge.adapter.process.pid), [])
+
+
+WIDTH_P67, HEIGHT_P67 = fake_minative.WIDTH, fake_minative.HEIGHT
 
 
 if __name__ == "__main__":
